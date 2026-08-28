@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migrationharness.dev/schemas/migration-contract.schema.json",
+  "title": "MigrationContract",
+  "description": "Output of mh-contract: the externally-observable behavior the Rust port must preserve. Source of truth for parity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["migrationId", "endpoints"],
+  "properties": {
+    "migrationId": { "type": "string", "pattern": "^MH-[0-9]{4}$" },
+    "endpoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "route", "request", "response", "compatibility"],
+        "properties": {
+          "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          "route": { "type": "string", "pattern": "^/" },
+          "request": {
+            "type": "object",
+            "description": "field name -> type descriptor (e.g. 'decimal', 'string', 'string?')",
+            "additionalProperties": { "type": "string" }
+          },
+          "response": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "invariants": {
+            "type": "array",
+            "description": "Human-readable predicates that must hold on every response (e.g. 'total >= 0').",
+            "items": { "type": "string" }
+          },
+          "compatibility": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["statusCode", "jsonFields", "decimalScale"],
+            "properties": {
+              "statusCode": { "type": "string", "enum": ["exact"] },
+              "jsonFields": { "type": "string", "enum": ["exact", "superset-allowed"] },
+              "decimalScale": { "type": "integer", "minimum": 0, "maximum": 8 },
+              "nullSemantics": { "type": "string", "enum": ["exact", "lenient"] }
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "when"],
+              "properties": {
+                "status": { "type": "integer", "minimum": 400, "maximum": 599 },
+                "when": { "type": "string" },
+                "bodyShape": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

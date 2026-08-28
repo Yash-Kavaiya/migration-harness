@@ -1,0 +1,31 @@
+{
+  "name": "migration-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Autonomous behavior-verified .NET → Rust modernization agent built on the TrueForge harness.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tsconfig.json",
+    "lint": "npm run lint --workspaces --if-present",
+    "sync-agents": "npm run sync-agents --workspace @mh/orchestrator",
+    "e2e": "tsx scripts/e2e.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

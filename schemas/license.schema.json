@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migrationharness.dev/schemas/license.schema.json",
+  "title": "MigrationLicense",
+  "description": "A single-use human authorization for the cutover. Bound to one manifest SHA-256.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "licenseId",
+    "migrationId",
+    "decision",
+    "approvedManifestSha256",
+    "permittedAction",
+    "target",
+    "uses",
+    "decidedBy",
+    "decidedAt"
+  ],
+  "properties": {
+    "licenseId": { "type": "string", "pattern": "^LIC-MH-[0-9]{4}-[0-9]{2}$" },
+    "migrationId": { "type": "string", "pattern": "^MH-[0-9]{4}$" },
+    "decision": { "type": "string", "enum": ["allow", "deny"] },
+    "reason": { "type": "string" },
+    "approvedManifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "permittedAction": {
+      "type": "string",
+      "description": "e.g. 'push migration branch + open PR on your-org/orderpricing-legacy'"
+    },
+    "target": { "type": "string", "description": "owner/repo:branch the license authorizes writes to." },
+    "uses": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "1 when issued, decremented to 0 on consumption. 0 = spent, cutover rejected."
+    },
+    "consumedAt": { "type": ["string", "null"], "format": "date-time" },
+    "invalidatedAt": { "type": ["string", "null"], "format": "date-time" },
+    "invalidationReason": { "type": ["string", "null"] },
+    "decidedBy": { "type": "string" },
+    "decidedAt": { "type": "string", "format": "date-time" }
+  }
+}
