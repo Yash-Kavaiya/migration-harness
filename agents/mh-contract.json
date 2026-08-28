@@ -1,0 +1,18 @@
+{
+  "name": "mh-contract",
+  "instructionsFile": "mh-contract.md",
+  "manifest": {
+    "model": { "name": "anthropic/claude-sonnet-4-6", "params": { "temperature": 0.1, "maxTokens": 8192 } },
+    "mcpServers": [
+      { "name": "github-read", "enableTools": ["@read-only"], "requireApprovalForTools": [], "preload": false }
+    ],
+    "skills": [{ "name": "behavioral-parity" }],
+    "config": {
+      "sandbox": { "enabled": true },
+      "askUserQuestions": { "enabled": false },
+      "dynamicSubAgents": { "enabled": false },
+      "generativeUi": { "enabled": false },
+      "iterationLimit": 80
+    }
+  }
+}

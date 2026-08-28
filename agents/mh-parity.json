@@ -1,0 +1,16 @@
+{
+  "name": "mh-parity",
+  "instructionsFile": "mh-parity.md",
+  "manifest": {
+    "model": { "name": "anthropic/claude-sonnet-4-6", "params": { "temperature": 0.1, "maxTokens": 12288 } },
+    "mcpServers": [],
+    "skills": [{ "name": "behavioral-parity" }],
+    "config": {
+      "sandbox": { "enabled": true },
+      "askUserQuestions": { "enabled": false },
+      "dynamicSubAgents": { "enabled": true },
+      "generativeUi": { "enabled": false },
+      "iterationLimit": 120
+    }
+  }
+}

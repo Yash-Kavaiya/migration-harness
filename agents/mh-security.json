@@ -1,0 +1,16 @@
+{
+  "name": "mh-security",
+  "instructionsFile": "mh-security.md",
+  "manifest": {
+    "model": { "name": "anthropic/claude-sonnet-4-6", "params": { "temperature": 0.1, "maxTokens": 8192 } },
+    "mcpServers": [],
+    "skills": [{ "name": "secure-migration" }],
+    "config": {
+      "sandbox": { "enabled": true },
+      "askUserQuestions": { "enabled": false },
+      "dynamicSubAgents": { "enabled": false },
+      "generativeUi": { "enabled": false },
+      "iterationLimit": 60
+    }
+  }
+}
