@@ -43,6 +43,35 @@ describe("generateFixtureMatrix", () => {
     for (const e of ENDPOINTS) expect(covered.has(`${e.method} ${e.route}`)).toBe(true);
   });
 
+  it("serializes /quote bodies with the contract field names (customerTier, not tier)", () => {
+    const fx = generateFixtureMatrix({ endpoints: ENDPOINTS });
+    const quoteBodies = fx
+      .filter((f) => f.endpoint.route === "/quote" && f.request.body && typeof f.request.body === "object")
+      .map((f) => f.request.body as Record<string, unknown>);
+    expect(quoteBodies.length).toBeGreaterThan(0);
+    for (const body of quoteBodies) {
+      expect(body).not.toHaveProperty("tier");
+      // every nominal case names the tier field; adversarial "missing field" cases may omit others
+      if ("customerTier" in body) expect(typeof body.customerTier).toBe("string");
+    }
+    // the happy sweep always carries all four fields
+    const happy = fx.find((f) => f.category === "happy" && f.endpoint.route === "/quote")!;
+    expect(Object.keys(happy.request.body as object).sort()).toEqual(["country", "coupon", "customerTier", "subtotal"]);
+  });
+
+  it("stamps generatedFrom provenance on every fixture when a source is given", () => {
+    const fx = generateFixtureMatrix({
+      endpoints: ENDPOINTS,
+      source: { repo: "acme/orderpricing", commit: "abc1234" },
+    });
+    expect(fx.every((f) => f.generatedFrom?.repo === "acme/orderpricing" && f.generatedFrom.commit === "abc1234")).toBe(true);
+  });
+
+  it("omits generatedFrom when no source is given", () => {
+    const fx = generateFixtureMatrix({ endpoints: ENDPOINTS });
+    expect(fx.every((f) => f.generatedFrom === undefined)).toBe(true);
+  });
+
   it("includes the validation / adversarial boundary block", () => {
     const fx = generateFixtureMatrix({ endpoints: ENDPOINTS });
     expect(fx.some((f) => f.category === "error" && f.note.includes("negative subtotal"))).toBe(true);

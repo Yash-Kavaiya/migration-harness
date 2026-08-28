@@ -28,4 +28,16 @@ describe("extractJson", () => {
   it("recovers the object even with trailing prose after it", () => {
     expect(extractJson('{"n":1} and that is my answer')).toEqual({ n: 1 });
   });
+
+  it("skips leading prose that itself contains braces", () => {
+    expect(extractJson('Use {this format}: {"status":"PASS"}')).toEqual({ status: "PASS" });
+    expect(extractJson('note: arrays like [a, b] are fine\n[{"id":"fx-0001"}]')).toEqual([{ id: "fx-0001" }]);
+  });
+
+  it("is not fooled by JSON-looking braces inside string values", () => {
+    expect(extractJson('{"msg":"use { and } carefully","ok":true}')).toEqual({
+      msg: "use { and } carefully",
+      ok: true,
+    });
+  });
 });

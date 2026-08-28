@@ -9,6 +9,9 @@
  * The generator emits fixture *requests*. Their `.NET` golden responses are
  * captured separately (once, locally, against the real service) and committed as
  * `demo/fixtures/*.json`; from then on the sandbox only ever runs Rust.
+ *
+ * Request-body field names follow the OrderPricingService contract in
+ * `docs/strategy-notes.md`: `customerTier`, `subtotal`, `coupon`, `country`.
  */
 
 export interface FixtureEndpoint {
@@ -17,6 +20,11 @@ export interface FixtureEndpoint {
 }
 
 export type FixtureCategory = "happy" | "boundary" | "adversarial" | "error" | "regression";
+
+export interface FixtureProvenance {
+  repo: string;
+  commit: string;
+}
 
 export interface FixtureRequest {
   /** `fx-0001`, `fx-0002`, … assigned in generation order. */
@@ -30,6 +38,8 @@ export interface FixtureRequest {
   };
   /** Human-readable note on why this case exists — kept out of the wire fixture. */
   note: string;
+  /** The repo/commit the golden will be captured against (schema `generatedFrom`). */
+  generatedFrom?: FixtureProvenance;
 }
 
 export function fixtureId(n: number): string {
@@ -66,21 +76,21 @@ interface BoundaryCase {
 }
 
 const BOUNDARY_CASES: BoundaryCase[] = [
-  { category: "error", body: { tier: "standard", subtotal: -1, coupon: null, country: "US" }, note: "negative subtotal → 400" },
-  { category: "error", body: { tier: "platinum", subtotal: 100, coupon: null, country: "US" }, note: "unknown tier → 400" },
-  { category: "boundary", body: { tier: "gold", subtotal: 999999999.99, coupon: "SUMMER10", country: "US" }, note: "very large subtotal" },
-  { category: "adversarial", body: { tier: "standard", subtotal: "100", coupon: null, country: "US" }, note: "subtotal as string — wrong type" },
-  { category: "adversarial", body: { tier: "standard", subtotal: 100, coupon: "ＳＵＭＭＥＲ１０", country: "US" }, note: "unicode full-width coupon" },
-  { category: "adversarial", body: { tier: "standard", subtotal: 100, country: "US" }, note: "missing coupon field" },
-  { category: "boundary", body: { tier: "standard", subtotal: 0, coupon: null, country: "US" }, note: "zero subtotal" },
+  { category: "error", body: { customerTier: "standard", subtotal: -1, coupon: null, country: "US" }, note: "negative subtotal → 400" },
+  { category: "error", body: { customerTier: "platinum", subtotal: 100, coupon: null, country: "US" }, note: "unknown tier → 400" },
+  { category: "boundary", body: { customerTier: "gold", subtotal: 999999999.99, coupon: "SUMMER10", country: "US" }, note: "very large subtotal" },
+  { category: "adversarial", body: { customerTier: "standard", subtotal: "100", coupon: null, country: "US" }, note: "subtotal as string — wrong type" },
+  { category: "adversarial", body: { customerTier: "standard", subtotal: 100, coupon: "ＳＵＭＭＥＲ１０", country: "US" }, note: "unicode full-width coupon" },
+  { category: "adversarial", body: { customerTier: "standard", subtotal: 100, country: "US" }, note: "missing coupon field" },
+  { category: "boundary", body: { customerTier: "standard", subtotal: 0, coupon: null, country: "US" }, note: "zero subtotal" },
 ];
 
 export interface GenerateMatrixOptions {
   /** Contract routes to cover. `/quote` gets the full sweep; others get a single smoke case. */
   endpoints: FixtureEndpoint[];
   dimensions?: Partial<MatrixDimensions>;
-  /** Repo/commit the goldens will be captured against — recorded on each fixture. */
-  source?: { repo: string; commit: string };
+  /** Repo/commit the goldens will be captured against — recorded on every fixture. */
+  source?: FixtureProvenance;
 }
 
 /**
@@ -98,12 +108,19 @@ export function generateFixtureMatrix(opts: GenerateMatrixOptions): FixtureReque
     request: FixtureRequest["request"],
     note: string,
   ): void => {
-    out.push({ id: fixtureId(++n), endpoint, category, request, note });
+    out.push({
+      id: fixtureId(++n),
+      endpoint,
+      category,
+      request,
+      note,
+      ...(opts.source ? { generatedFrom: { repo: opts.source.repo, commit: opts.source.commit } } : {}),
+    });
   };
 
   const quote = opts.endpoints.find((e) => e.method === "POST" && e.route === "/quote");
   if (quote) {
-    for (const tier of dims.tiers) {
+    for (const customerTier of dims.tiers) {
       for (const subtotal of dims.subtotals) {
         for (const coupon of dims.coupons) {
           for (const country of dims.countries) {
@@ -111,8 +128,8 @@ export function generateFixtureMatrix(opts: GenerateMatrixOptions): FixtureReque
             next(
               quote,
               isMidpoint ? "regression" : "happy",
-              { body: { tier, subtotal, coupon, country } },
-              `${tier} / ${subtotal} / ${coupon ?? "no-coupon"} / ${country}` +
+              { body: { customerTier, subtotal, coupon, country } },
+              `${customerTier} / ${subtotal} / ${coupon ?? "no-coupon"} / ${country}` +
                 (isMidpoint ? " (rounding midpoint)" : ""),
             );
           }
@@ -129,7 +146,7 @@ export function generateFixtureMatrix(opts: GenerateMatrixOptions): FixtureReque
       next(
         endpoint,
         "happy",
-        { body: { tier: "standard", subtotal: 100, coupon: null, country: "US" } },
+        { body: { customerTier: "standard", subtotal: 100, coupon: null, country: "US" } },
         `${endpoint.method} ${endpoint.route} smoke`,
       );
     }

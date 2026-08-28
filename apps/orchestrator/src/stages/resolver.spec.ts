@@ -69,6 +69,10 @@ describe("discover resolver", () => {
   it("throws on a schema-invalid artifact", async () => {
     await expect(run("discover", "architecture.json", { migrationId: MID })).rejects.toThrow(/schema/);
   });
+
+  it("rejects an artifact whose embedded migrationId is for another migration", async () => {
+    await expect(run("discover", "architecture.json", { ...ARCH, migrationId: "MH-9999" })).rejects.toThrow(/MH-9999/);
+  });
 });
 
 describe("migrate resolver", () => {
@@ -93,6 +97,11 @@ describe("migrate resolver", () => {
   it("routes to repair when tests fail", async () => {
     expect(await run("migrate", "build-report.json", build({ cargoTest: { passed: 30, total: 34 } }))).toBe("build-failed");
   });
+
+  it("recovers a malformed build report into a bounded repair round (not a hard fail)", async () => {
+    expect(await run("migrate", "build-report.json", "cargo blew up, no json")).toBe("build-failed");
+    expect(store.getArtifact(MID, "buildFailure")).toMatchObject({ detail: expect.stringMatching(/not valid JSON/) });
+  });
 });
 
 describe("parity resolver", () => {
@@ -110,10 +119,10 @@ describe("parity resolver", () => {
     expect(await run("parity", "parity-report.json", report())).toBe("ok");
   });
 
-  it("routes to repair on any mismatch and stores the reconciled report", async () => {
+  it("routes to repair on any mismatch and reconciles the counts up", async () => {
     const withTrap = report({
       passed: 384,
-      failed: 0, // agent under-reported
+      failed: 0, // agent under-reported the headline number...
       mismatches: [
         {
           fixtureId: "fx-0007",
@@ -126,8 +135,21 @@ describe("parity resolver", () => {
       ],
     });
     expect(await run("parity", "parity-report.json", withTrap)).toBe("mismatch");
-    expect(store.getArtifact<{ failed: number; passed: number }>(MID, "parity")).toMatchObject({ failed: 1, passed: 383 });
+    const stored = store.getArtifact<{ failed: number; passed: number; byRoute: Array<{ passed: number }> }>(MID, "parity")!;
+    expect(stored).toMatchObject({ failed: 1, passed: 383 });
+    expect(stored.byRoute[0]!.passed).toBe(383); // recomputed from the mismatch attribution
     expect(store.getArtifact(MID, "parityDiagnosis")).toMatchObject({ dominant: "DECIMAL_ROUNDING" });
+  });
+
+  it("rejects a report whose passed + failed does not equal total (no manufactured pass)", async () => {
+    await expect(
+      run("parity", "parity-report.json", report({ passed: 0, failed: 0, total: 384, mismatches: [], byRoute: [] })),
+    ).rejects.toThrow(/inconsistent totals/);
+  });
+
+  it("recovers an unparseable parity report into a repair round", async () => {
+    expect(await run("parity", "parity-report.json", "the parity test runner crashed")).toBe("mismatch");
+    expect(store.getArtifact(MID, "parityFailure")).toBeTruthy();
   });
 });
 

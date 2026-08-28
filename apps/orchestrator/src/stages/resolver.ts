@@ -1,11 +1,15 @@
 /**
  * The production {@link StageResolver}: after an agent's turn completes, pull its
  * artifact out of the workspace, validate it against the shared JSON Schema,
- * store it for the gate engine, and return the state-machine outcome.
+ * confirm it belongs to this migration, store it for the gate engine, and return
+ * the state-machine outcome.
  *
- * Everything here is fail-closed. A missing or malformed artifact is never
- * treated as a pass — discovery/contract/security throw (unrecoverable without a
- * human), migrate/parity/repair degrade to a bounded repair round.
+ * Fail-closed, two ways:
+ *  - discover / contract / security throw on a bad artifact — the pipeline cannot
+ *    proceed without a valid one and a human must look;
+ *  - migrate / parity recover a bad artifact into a bounded repair round
+ *    (`build-failed` / `mismatch`), storing the raw payload as evidence. The
+ *    state machine's `MAX_REPAIR_ROUNDS` stops a stuck agent.
  */
 import {
   architectureSchema,
@@ -15,6 +19,7 @@ import {
   parityReportSchema,
   securityReportSchema,
   type MismatchCategory,
+  type ParityReport,
   type StageOutcome,
 } from "@mh/shared";
 import type { z } from "zod";
@@ -39,15 +44,81 @@ class StageArtifactError extends Error {
   }
 }
 
-function parseOrThrow<T>(stage: string, schema: z.ZodType<T>, raw: unknown): T {
+type ParseAttempt<T> = { ok: true; data: T } | { ok: false; detail: string };
+
+/** Validate shape + migration identity without throwing. */
+function tryParse<T extends { migrationId: string }>(
+  schema: z.ZodType<T>,
+  raw: unknown,
+  migrationId: string,
+): ParseAttempt<T> {
   if (isParseFailure(raw)) {
-    throw new StageArtifactError(stage, `agent artifact was not valid JSON (${raw.raw.slice(0, 200)})`);
+    return { ok: false, detail: `artifact was not valid JSON (${raw.raw.slice(0, 200)})` };
   }
   const res = schema.safeParse(raw);
   if (!res.success) {
-    throw new StageArtifactError(stage, `artifact failed schema validation — ${res.error.issues[0]?.message ?? "unknown"}`);
+    return { ok: false, detail: `schema validation failed — ${res.error.issues[0]?.message ?? "unknown"}` };
   }
+  if (res.data.migrationId !== migrationId) {
+    return {
+      ok: false,
+      detail: `artifact is for ${res.data.migrationId}, not ${migrationId}`,
+    };
+  }
+  return { ok: true, data: res.data };
+}
+
+function parseOrThrow<T extends { migrationId: string }>(
+  stage: string,
+  schema: z.ZodType<T>,
+  raw: unknown,
+  migrationId: string,
+): T {
+  const res = tryParse(schema, raw, migrationId);
+  if (!res.ok) throw new StageArtifactError(stage, res.detail);
   return res.data;
+}
+
+/**
+ * The parity report's own headline numbers must be internally consistent. We
+ * reconcile `failed` *up* to match the mismatch list (an agent can under-count
+ * failures) but never invent passing fixtures, and we reject a report whose
+ * totals contradict themselves. Per-route passing counts are recomputed from the
+ * mismatch attribution so a stale `byRoute` cannot mask a failure at the gate.
+ */
+function reconcileParity(report: ParityReport): ParityReport {
+  const listedFailures = report.mismatches.length;
+  const failed = Math.max(report.failed, listedFailures);
+  const passed = report.total - failed;
+
+  if (passed < 0) {
+    throw new StageArtifactError("parity", `${listedFailures} mismatches exceed total ${report.total}`);
+  }
+  if (report.passed + report.failed !== report.total) {
+    throw new StageArtifactError(
+      "parity",
+      `inconsistent totals: passed ${report.passed} + failed ${report.failed} ≠ total ${report.total}`,
+    );
+  }
+  if (report.byRoute.length > 0) {
+    const routeTotal = report.byRoute.reduce((s, r) => s + r.total, 0);
+    if (routeTotal !== report.total) {
+      throw new StageArtifactError("parity", `byRoute totals sum to ${routeTotal}, not ${report.total}`);
+    }
+  }
+
+  // Recompute per-route passing from the mismatch list.
+  const failsByRoute = new Map<string, number>();
+  for (const m of report.mismatches) {
+    const key = `${m.endpoint.method} ${m.endpoint.route}`;
+    failsByRoute.set(key, (failsByRoute.get(key) ?? 0) + 1);
+  }
+  const byRoute = report.byRoute.map((r) => {
+    const fails = failsByRoute.get(`${r.method} ${r.route}`) ?? 0;
+    return { ...r, passed: Math.max(0, r.total - fails) };
+  });
+
+  return { ...report, failed, passed, byRoute };
 }
 
 export interface StageResolverOptions {
@@ -68,37 +139,55 @@ export function makeStageResolver(opts: StageResolverOptions = {}): StageResolve
 
     switch (stage) {
       case "discover": {
-        const arch = parseOrThrow("discover", architectureSchema, await downloadJson(gateway, session, artifactOf()));
+        const arch = parseOrThrow("discover", architectureSchema, await downloadJson(gateway, session, artifactOf()), migrationId);
         store.putArtifact(migrationId, "architecture", arch, at);
         return arch.unsupported && arch.unsupported.length > 0 ? "unsupported" : "ok";
       }
 
       case "contract": {
-        const contract = parseOrThrow("contract", migrationContractSchema, await downloadJson(gateway, session, artifactOf()));
+        const contract = parseOrThrow("contract", migrationContractSchema, await downloadJson(gateway, session, artifactOf()), migrationId);
         store.putArtifact(migrationId, "contract", contract, at);
+
+        // Optional companion file: how many .NET xUnit cases exist and how many
+        // are represented as goldens. Feeds gate 4 (source-tests-preserved).
+        const plan = await downloadJson(gateway, session, "fixture-plan.json");
+        if (!isParseFailure(plan) && plan && typeof plan === "object") {
+          const p = plan as { fixtures?: unknown; dotnetTestCases?: unknown };
+          const fixtures = Number(p.fixtures);
+          const cases = Number(p.dotnetTestCases);
+          if (Number.isFinite(fixtures) && Number.isFinite(cases)) {
+            store.putArtifact(migrationId, "sourceTests", { discovered: cases, representedAsFixtures: fixtures }, at);
+          }
+        }
         return "ok";
       }
 
       case "migrate": {
-        const build = parseOrThrow("migrate", buildReportSchema, await downloadJson(gateway, session, artifactOf()));
-        store.putArtifact(migrationId, "build", build, at);
-        const ok = build.cargoCheck === "PASS" && build.cargoTest.total > 0 && build.cargoTest.passed === build.cargoTest.total;
+        const parsed = tryParse(buildReportSchema, await downloadJson(gateway, session, artifactOf()), migrationId);
+        if (!parsed.ok) {
+          store.putArtifact(migrationId, "buildFailure", { detail: parsed.detail }, at);
+          return "build-failed"; // recoverable — back into a bounded repair round
+        }
+        store.putArtifact(migrationId, "build", parsed.data, at);
+        const t = parsed.data.cargoTest;
+        const ok = parsed.data.cargoCheck === "PASS" && t.total > 0 && t.passed === t.total;
         return ok ? "ok" : "build-failed";
       }
 
       case "parity": {
-        const report = parseOrThrow("parity", parityReportSchema, await downloadJson(gateway, session, artifactOf()));
+        const parsed = tryParse(parityReportSchema, await downloadJson(gateway, session, artifactOf()), migrationId);
+        if (!parsed.ok) {
+          store.putArtifact(migrationId, "parityFailure", { detail: parsed.detail }, at);
+          return "mismatch"; // recoverable — can't confirm parity, so don't advance
+        }
 
-        // Cross-check the agent's headline numbers against its own mismatch list;
-        // reconcile `failed` up if it under-reported.
-        const failed = Math.max(report.failed, report.mismatches.length);
-        const reconciled = { ...report, failed, passed: Math.max(0, report.total - failed) };
-        store.putArtifact(migrationId, "parity", reconciled, at);
+        const report = reconcileParity(parsed.data);
+        store.putArtifact(migrationId, "parity", report, at);
 
         // Diagnosis for the timeline/UI — one category per failing fixture, the
         // most common wins. Never fed back to mh-repair.
         const counts = new Map<MismatchCategory, number>();
-        for (const m of report.mismatches) {
+        for (const m of parsed.data.mismatches) {
           const diffs = m.diff.map((d) => ({ path: d.path, expected: d.expected, actual: d.actual }));
           const cat = classifyMismatch(diffs, { decimalScale: 2 });
           counts.set(cat, (counts.get(cat) ?? 0) + 1);
@@ -106,12 +195,11 @@ export function makeStageResolver(opts: StageResolverOptions = {}): StageResolve
         const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
         store.putArtifact(migrationId, "parityDiagnosis", { dominant, counts: Object.fromEntries(counts) }, at);
 
-        const clean = reconciled.failed === 0 && reconciled.total > 0;
-        return clean ? "ok" : "mismatch";
+        return report.failed === 0 && report.total > 0 ? "ok" : "mismatch";
       }
 
       case "security": {
-        const sec = parseOrThrow("security", securityReportSchema, await downloadJson(gateway, session, artifactOf()));
+        const sec = parseOrThrow("security", securityReportSchema, await downloadJson(gateway, session, artifactOf()), migrationId);
         store.putArtifact(migrationId, "security", sec, at);
         return "ok";
       }
