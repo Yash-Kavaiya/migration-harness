@@ -29,3 +29,6 @@ Thumbs.db
 # demo artifacts
 recordings/
 *.mp4
+
+# vendored donor repos (Reuse Map sources — cloned locally, never committed)
+reference/
