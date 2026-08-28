@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./fixtures": "./src/fixtures.ts",
     "./gates": "./src/gates.ts",
     "./manifest": "./src/manifest.ts",
     "./parity": "./src/parity.ts",

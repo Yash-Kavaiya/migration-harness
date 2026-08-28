@@ -15,6 +15,7 @@ import type { ServerResponse } from "node:http";
 import type { AgentGateway, StageEvent } from "./trueforge.js";
 import { Store } from "./store.js";
 import { SseHub } from "./sse.js";
+import { buildRepairInput } from "./stages/repair-input.js";
 
 export type Clock = () => string;
 
@@ -52,6 +53,8 @@ export type StageResolver = (args: {
   migrationId: string;
   sessionId: string;
   turnId: string | null;
+  /** Orchestrator clock reading, taken once when the stage finished. */
+  at: string;
 }) => Promise<StageOutcome>;
 
 const DEFAULT_RESOLVER: StageResolver = async ({ stage }) => {
@@ -227,6 +230,7 @@ export class Orchestrator {
             migrationId,
             sessionId: result.sessionId,
             turnId: result.turnId,
+            at: this.clock(),
           }).then((outcome) => this.applyOutcome(migrationId, outcome));
         }
         return undefined;
@@ -384,6 +388,7 @@ export class Orchestrator {
       migrationId,
       sessionId: result.sessionId,
       turnId: result.turnId,
+      at: this.clock(),
     });
     this.applyOutcome(migrationId, outcome);
   }
@@ -428,6 +433,13 @@ export class Orchestrator {
 
   private stageInput(migrationId: string, stage: MigrationStage): string {
     const m = this.store.getMigration(migrationId)!;
+
+    if (stage === "repair") {
+      const state = this.store.loadState(migrationId);
+      const evidence = buildRepairInput(this.store, migrationId, state?.repairRounds ?? 1);
+      if (evidence) return evidence;
+    }
+
     return JSON.stringify({
       migrationId,
       stage,

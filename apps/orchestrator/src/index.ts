@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { buildServer } from "./server.js";
 import { SseHub } from "./sse.js";
+import { makeStageResolver } from "./stages/resolver.js";
 import { Store } from "./store.js";
 import { TrueForgeGateway } from "./trueforge.js";
 
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
       targetBranch: config.MH_TARGET_BRANCH,
     },
   });
+  orchestrator.setStageResolver(makeStageResolver());
 
   const app = await buildServer({ orchestrator, webOrigin: config.WEB_ORIGIN });
 

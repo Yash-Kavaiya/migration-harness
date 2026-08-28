@@ -13,17 +13,22 @@ interface Script {
   outcome?: StageResult["outcome"];
   /** If set, emit a tool.approval_required with this toolCallId and end as "waiting". */
   pauseForApproval?: string;
+  /** Workspace files this turn "wrote", resolved by `downloadArtifact` for its session. */
+  artifacts?: Record<string, string>;
 }
 
 /**
- * A scripted stand-in for TrueForge. Each agent name maps to a Script; `reply`
- * continues from wherever `runStage` paused. Deterministic — no real I/O.
+ * A scripted stand-in for TrueForge. Each agent name maps to a Script (or a queue
+ * of them, one consumed per `runStage` call); `reply` continues from wherever
+ * `runStage` paused. Deterministic — no real I/O.
  */
 export class FakeGateway implements AgentGateway {
   readonly calls: Array<{ method: string; agentName?: string; input?: string }> = [];
   private seq = 0;
   private sessionSeq = 0;
   private readonly scripts = new Map<string, Script>();
+  private readonly queues = new Map<string, Script[]>();
+  private readonly artifactsBySession = new Map<string, Record<string, string>>();
   artifacts: Record<string, string> = {};
 
   script(agentName: string, script: Script): this {
@@ -31,11 +36,18 @@ export class FakeGateway implements AgentGateway {
     return this;
   }
 
+  /** Successive `runStage` calls for this agent consume these scripts in order; the last repeats. */
+  scriptEach(agentName: string, scripts: Script[]): this {
+    this.queues.set(agentName, [...scripts]);
+    return this;
+  }
+
   async runStage(params: RunStageParams): Promise<StageResult> {
     this.calls.push({ method: "runStage", agentName: params.agentName, input: params.input });
     const sessionId = `sess-${++this.sessionSeq}`;
     const turnId = `turn-${this.sessionSeq}`;
-    const script = this.scripts.get(params.agentName) ?? {};
+    const script = this.nextScript(params.agentName);
+    if (script.artifacts) this.artifactsBySession.set(sessionId, script.artifacts);
     params.onStart?.({ sessionId });
 
     await this.emit(params.onEvent, {
@@ -112,7 +124,15 @@ export class FakeGateway implements AgentGateway {
 
   async downloadArtifact(params: { sessionId: string; turnId: string; path: string }): Promise<string> {
     this.calls.push({ method: "downloadArtifact", input: params.path });
-    return this.artifacts[params.path] ?? "{}";
+    return this.artifactsBySession.get(params.sessionId)?.[params.path] ?? this.artifacts[params.path] ?? "{}";
+  }
+
+  private nextScript(agentName: string): Script {
+    const queue = this.queues.get(agentName);
+    if (queue && queue.length > 0) {
+      return queue.length === 1 ? queue[0]! : queue.shift()!;
+    }
+    return this.scripts.get(agentName) ?? {};
   }
 
   private async emit(
