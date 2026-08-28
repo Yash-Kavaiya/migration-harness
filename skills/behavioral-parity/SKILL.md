@@ -55,9 +55,11 @@ original — only to the committed goldens.
 
 ## Reporting a mismatch
 
-For every failing fixture record: the id, the request, both full (un-normalized)
-responses, a **field-level diff** (`path`, `expected`, `actual`), and a specific
-root-cause hypothesis. Good hypotheses name the mechanism:
+For every failing fixture record: `fixtureId`, `endpoint` (`{method, route}` copied
+from the fixture — the api-compatibility gate needs it to attribute the failure to
+a route), the request as `input`, both full (un-normalized) responses, a
+**field-level diff** (`path`, `expected`, `actual`), and a specific root-cause
+`hypothesis`. Good hypotheses name the mechanism:
 
 - "monetary rounding: source uses half-to-even, port uses half-up — diverges on
   exact half-cent results"
