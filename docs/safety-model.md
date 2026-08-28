@@ -5,6 +5,16 @@ does **not** earn authority by compiling, passing tests, or even matching golden
 behavior. The only thing that authorizes a write to the canonical repository is a
 human licensing one specific, hashed, verified migration manifest.
 
+> **Implementation status.** The primitives — the nine gates, `canCutover`,
+> `verifyLicense`, `verifyCutoverPreconditions`, `consumeLicense`,
+> `invalidateLicense` — live in `@mh/shared` and are tested (`tests/`). The seven
+> scoped agents and their MCP restrictions land in PR #2; the orchestrator that
+> *calls* these primitives at the right moments (recompute gates before cutover,
+> re-verify TOCTOU, invalidate + clear on mismatch, persist consumption after the
+> PR) is wired across PRs #5 and #9. Where this doc says "the orchestrator
+> refuses / consumes / invalidates", read it as the designed control that those
+> PRs implement — not yet a property of `main`.
+
 ## Action classes
 
 | Class | Actions | Control |
@@ -25,13 +35,16 @@ human licensing one specific, hashed, verified migration manifest.
    Its manifest sets `requireApprovalForTools: ["@all"]` — each branch creation,
    file write, and PR open shows up in the UI for a human to allow or deny before
    it executes.
-4. **The orchestrator refuses to invoke cutover** unless gates 1–8 are green, a
-   valid unconsumed license exists (gate 9), and `sha256Manifest(currentManifest)
-   === license.approvedManifestSha256`.
+4. **The orchestrator refuses to invoke cutover** unless `canCutover(gates)` is
+   true — every one of the nine gates green, which includes a valid unconsumed
+   license (gate 9) whose `approvedManifestSha256` still equals
+   `sha256Manifest(currentManifest)`. (`canCutover` + `verifyLicense` are in
+   `@mh/shared`; PR #9 makes the cutover stage call them and refuses otherwise.)
 5. **The license is single-use and hash-bound.** It authorizes exactly one
    manifest digest and exactly one target (`manifest.targetRepo` /
-   `manifest.targetBranch`). After the PR is created it is consumed (`uses: 0`);
-   any later cutover attempt is rejected.
+   `manifest.targetBranch`). `consumeLicense` sets `uses: 0` and stamps
+   `consumedAt` after the PR is created; `verifyLicense` then rejects any later
+   attempt. PR #9 persists that consumption transactionally with PR creation.
 
 ## The manifest and the license
 
@@ -50,17 +63,19 @@ digest, with `uses: 1`.
 Between "human clicks license" and "cutover agent makes the first GitHub write",
 the generated tree could change (a stray repair, a regeneration, tampering).
 Immediately before the first write, `verifyCutoverPreconditions` re-hashes the
-Rust tree **as it exists now** and compares it to `manifest.rustTreeSha256`.
-Mismatch → the license is invalidated, the stage is blocked, and the UI shows
-"migration changed after authorization — re-approval required". (`@mh/shared`;
-`tests/manifest-toctou.spec.ts`.)
+Rust tree **as it exists now** and compares it to `manifest.rustTreeSha256`
+(`@mh/shared`; `tests/manifest-toctou.spec.ts`). On mismatch it returns
+`ok: false`; the cutover stage (PR #9) then calls `invalidateLicense` +
+`clearLicense`, blocks the stage, and the UI shows "migration changed after
+authorization — re-approval required".
 
 ## The target is not a free parameter
 
-A license authorizes writes to the target *in the manifest*. `mh-cutover` takes
-`targetRepo` / `targetBranch` from `manifest.*` only; if the turn message carries
-a different value, it stops before writing anything. This closes the path where a
-license issued for repo A could be pointed at repo B.
+A license authorizes writes to the target *in the manifest*. `mh-cutover`'s
+prompt takes `targetRepo` / `targetBranch` from `manifest.*` only and stops if a
+turn-message value disagrees. PR #9 adds the belt-and-braces orchestrator-side
+check (compare the manifest target to the request target, and to
+`license.target`, before invoking the stage).
 
 ## What this model does NOT claim
 

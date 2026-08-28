@@ -1,5 +1,9 @@
 # Architecture
 
+> Describes the whole system. On `main` today only `@mh/shared` (types, gates,
+> manifest/license primitives, state machine) and its tests exist; the agents,
+> skills, orchestrator, and UI arrive in PRs #2–#5 and #9–#10.
+
 ## The split
 
 **TrueForge owns** the agent loop, the Daytona sandbox, MCP connections, tool
@@ -59,7 +63,9 @@ mh-architect mh-contract mh-migrator │  mh-parity        orchestrator
 1. **discovery** — `architecture.json` valid, `unsupported[]` empty
 2. **contract** — ≥1 endpoint contract
 3. **rust-build** — `cargo check` PASS and every test passes
-4. **source-tests-preserved** — every xUnit case represented as a fixture
+4. **source-tests-preserved** — `representedAsFixtures >= discovered` xUnit cases
+   (an aggregate check; the contract stage is responsible for a per-test mapping,
+   not just the count)
 5. **behavioral-parity** — 100% (`passed === total`, `failed === 0`)
 6. **api-compatibility** — parity clean, every contract route exercised
 7. **clippy** — `cargo clippy -- -D warnings` clean

@@ -3,6 +3,10 @@
 Goal: show a real agent reaching real tools, executing generated code safely, and
 **pausing before an irreversible action** until a human licenses it.
 
+> This is the target walkthrough. It runs once the orchestrator + agents PRs
+> (#2–#5, #9) are merged and TrueForge is configured per Setup below. On `main`
+> today, only `@mh/shared` and its tests are present.
+
 ## Setup (before recording)
 
 - TrueForge running at `localhost:8790` with: Anthropic model, `github-read` +
