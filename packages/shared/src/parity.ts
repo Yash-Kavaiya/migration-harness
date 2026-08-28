@@ -187,21 +187,25 @@ export function classifyMismatch(diffs: readonly FieldDiff[], opts: NormalizeOpt
   if (diffs.some((d) => d.actual === undefined && d.expected !== undefined)) return "FIELD_MISSING";
   if (diffs.some((d) => d.expected === undefined && d.actual !== undefined)) return "EXTRA_FIELD";
 
-  const numeric: Array<{ e: number; a: number }> = [];
+  // DECIMAL_ROUNDING only when *every* diff is a small numeric drift. A fixture
+  // that also has an unrelated non-numeric value change is a broader behavioural
+  // defect and must not be filed under rounding.
+  let sawNumeric = false;
+  let allRoundingDrift = true;
   let anyTypeMismatch = false;
   for (const d of diffs) {
     const e = asNumber(d.expected);
     const a = asNumber(d.actual);
     if (e !== null && a !== null) {
-      numeric.push({ e, a });
-    } else if (jsonType(d.expected) !== jsonType(d.actual)) {
-      anyTypeMismatch = true;
+      sawNumeric = true;
+      if (!isRoundingDrift(e, a, opts.decimalScale)) allRoundingDrift = false;
+    } else {
+      allRoundingDrift = false;
+      if (jsonType(d.expected) !== jsonType(d.actual)) anyTypeMismatch = true;
     }
   }
 
-  if (numeric.length > 0 && numeric.every(({ e, a }) => isRoundingDrift(e, a, opts.decimalScale))) {
-    return "DECIMAL_ROUNDING";
-  }
+  if (sawNumeric && allRoundingDrift) return "DECIMAL_ROUNDING";
   if (anyTypeMismatch) return "TYPE_MISMATCH";
   return "VALUE_MISMATCH";
 }

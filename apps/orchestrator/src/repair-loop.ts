@@ -6,7 +6,10 @@
  * The rules that matter, all asserted by `repair-loop.spec.ts`:
  *  - a cap that is only described is not a cap — {@link CallBudget} is checked;
  *  - hitting the cap is an ESCALATE, never a silent pass;
- *  - an unparseable verdict from `mh-repair` is a failure, not an approval;
+ *  - `repaired` comes only from an independent `cargo test --test parity` re-run
+ *    (`RepairRoundOutcome.parityRestored`), never from `mh-repair`'s self-report;
+ *  - `parseRepairVerdict` is still fail-closed, but it only feeds the next round's
+ *    prompt — an unparseable verdict cannot pass or fail the loop by itself;
  *  - a round that cannot afford both its calls is never started (no half-round
  *    that edits the tree and then skips re-verification).
  */
@@ -102,7 +105,15 @@ export interface RepairRoundInput {
 export interface RepairRoundOutcome {
   /** `false` when the `mh-repair` turn itself failed to run (crashed, timed out). */
   ok: boolean;
-  /** The agent's final message, parsed by {@link parseRepairVerdict}. */
+  /**
+   * Did the independent `cargo test --test parity` re-run pass? This — not the
+   * agent's self-report — is the sole authority for a `repaired` result. Required
+   * whenever `ok` is `true`.
+   */
+  parityRestored?: boolean;
+  /** Fixtures still failing after this round's re-run, when known. */
+  failed?: number;
+  /** The agent's final message. Read only for the diagnosis `gap`, never for success. */
   text: string;
   /** Human-readable reason when `ok` is `false`. */
   detail?: string;
@@ -112,8 +123,10 @@ export interface RunRepairLoopArgs {
   maxRounds: number;
   budget: CallBudget;
   /**
-   * Drives one round: apply a fix with `mh-repair`, then re-run
-   * `cargo test --test parity`. Charged as {@link CALLS_PER_ROUND}.
+   * Drives one round: apply a fix with `mh-repair`, then run `cargo test --test
+   * parity` and report its result in {@link RepairRoundOutcome.parityRestored}.
+   * Charged as {@link CALLS_PER_ROUND}. May reject; a thrown error is treated
+   * exactly like `{ ok: false }`.
    */
   runRound: (input: RepairRoundInput) => Promise<RepairRoundOutcome>;
   /** Optional per-round callback for the event ledger. */
@@ -123,12 +136,15 @@ export interface RunRepairLoopArgs {
 export interface RepairRoundRecord {
   round: number;
   verdict: RepairVerdict;
+  /** The independently verified parity result for the round, when it ran. */
+  parityRestored?: boolean;
+  failed?: number;
   budgetExhausted?: boolean;
   invocationFailed?: boolean;
 }
 
 export interface RepairLoopResult {
-  /** `repaired` → re-verify from parity; `escalate` → blocked, a human decides. */
+  /** `repaired` → the parity re-run already passed; `escalate` → blocked, a human decides. */
   outcome: "repaired" | "escalate";
   reason: string;
   rounds: RepairRoundRecord[];
@@ -164,7 +180,15 @@ export async function runRepairLoop(args: RunRepairLoopArgs): Promise<RepairLoop
     }
 
     budget.spend(); // the repair attempt
-    const result = await runRound({ round, gap: round > 1 ? verdict.gap : "" });
+
+    let result: RepairRoundOutcome;
+    try {
+      result = await runRound({ round, gap: round > 1 ? verdict.gap : "" });
+    } catch (err) {
+      // A rejected runRound is the same as a crashed turn — never let it escape
+      // the bounded loop.
+      result = { ok: false, text: "", detail: err instanceof Error ? err.message : String(err) };
+    }
 
     if (!result.ok) {
       // A crashed repair turn is a failed round, not a graded outcome — the same
@@ -181,15 +205,25 @@ export async function runRepairLoop(args: RunRepairLoopArgs): Promise<RepairLoop
     }
 
     budget.spend(); // the parity re-run
+
+    // The agent's self-report is read for its description of what is still wrong,
+    // never as the success signal. Only the independent parity re-run can say
+    // "repaired".
     verdict = parseRepairVerdict(result.text);
-    const record: RepairRoundRecord = { round, verdict };
+    const parityRestored = result.parityRestored === true;
+    const record: RepairRoundRecord = {
+      round,
+      verdict,
+      parityRestored,
+      ...(result.failed !== undefined ? { failed: result.failed } : {}),
+    };
     rounds.push(record);
     onRound?.(record);
 
-    if (verdict.status === "fixed") {
+    if (parityRestored) {
       return {
         outcome: "repaired",
-        reason: `parity restored after ${round} repair round${round === 1 ? "" : "s"}`,
+        reason: `parity re-run passed after ${round} repair round${round === 1 ? "" : "s"}`,
         rounds,
         budget: snapshot(budget),
       };

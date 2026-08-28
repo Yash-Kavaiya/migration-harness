@@ -56,9 +56,36 @@ describe("buildEvidenceBundle — the blindness guarantee", () => {
     }
   });
 
-  it("never lets a forbidden key reach the bundle, even nested", () => {
-    expect(() => assertBlind({ a: { b: [{ rationale: "because" }] } })).toThrow(/rationale/);
-    expect(() => assertBlind({ mismatches: [{ fix: "use rust_decimal" }] })).toThrow(/fix/);
+  it("throws if a mapper ever spreads parity metadata into a mismatch wrapper", () => {
+    const b = buildEvidenceBundle(input());
+    // simulate a regressed `chosen.map(m => ({ ...m, ... }))`
+    (b.mismatches[0] as unknown as Record<string, unknown>).hypothesis = "banker's rounding";
+    expect(() => assertBlind(b)).toThrow(/hypothesis/);
+  });
+
+  it("throws if the bundle wrapper grows an unexpected key", () => {
+    const b = buildEvidenceBundle(input());
+    (b as unknown as Record<string, unknown>).classification = "DECIMAL_ROUNDING";
+    expect(() => assertBlind(b)).toThrow(/classification/);
+  });
+
+  it("does NOT reject a real API payload whose fields happen to be named like metadata", () => {
+    const withMetaLikeFields = input({
+      failed: 1,
+      mismatches: [
+        {
+          fixtureId: "fx-0001",
+          endpoint: { method: "POST", route: "/quote" },
+          input: { body: { source: "web" } },
+          dotnet: { status: 400, body: { error: { category: "validation", source: "subtotal", suggestion: "send >= 0" } } },
+          rust: { status: 200, body: {} },
+        },
+      ],
+    });
+    expect(() => buildEvidenceBundle(withMetaLikeFields)).not.toThrow();
+    const json = JSON.stringify(buildEvidenceBundle(withMetaLikeFields));
+    expect(json).toContain('"category":"validation"'); // payload preserved verbatim
+    expect(json).toContain('"source":"subtotal"');
   });
 
   it("the rendered prompt carries no forbidden key and no Rust source", () => {

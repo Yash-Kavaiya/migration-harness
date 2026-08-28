@@ -66,6 +66,15 @@ describe("classifyMismatch — taxonomy", () => {
     expect(classifyMismatch(diffs, { decimalScale: 2 })).toBe("VALUE_MISMATCH");
   });
 
+  it("does NOT file a mixed failure under DECIMAL_ROUNDING", () => {
+    // a one-cent drift AND an unrelated same-type string change on the same fixture
+    const diffs = diffResponses(
+      { total: "170.00", message: "quote ok" },
+      { total: "169.99", message: "quote computed" },
+    );
+    expect(classifyMismatch(diffs, { decimalScale: 2 })).toBe("VALUE_MISMATCH");
+  });
+
   it("STATUS_CODE dominates whatever drifted under it", () => {
     const diffs = diffResponses(
       { status: 400, body: { error: "subtotal must be >= 0" } },

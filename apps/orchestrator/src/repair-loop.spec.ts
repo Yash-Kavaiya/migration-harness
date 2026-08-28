@@ -69,24 +69,51 @@ describe("parseRepairVerdict", () => {
 
 // --------------------------------------------------------- loop enforcement
 
-/** A round runner that always reports the parity break is still open. */
+/** A round runner where the parity re-run keeps failing. */
 const alwaysFailing = async (): Promise<RepairRoundOutcome> => ({
   ok: true,
+  parityRestored: false,
+  failed: 6,
   text: '{"status":"failed","gap":"still 6 fixtures red"}',
 });
 
 describe("runRepairLoop — stop conditions", () => {
-  it("returns `repaired` as soon as a round reports fixed", async () => {
+  it("returns `repaired` only when the parity re-run passes", async () => {
     const runRound = vi
       .fn<(i: { round: number; gap: string }) => Promise<RepairRoundOutcome>>()
-      .mockResolvedValueOnce({ ok: true, text: '{"status":"failed","gap":"tax"}' })
-      .mockResolvedValueOnce({ ok: true, text: '{"status":"fixed","category":"DECIMAL_ROUNDING"}' });
+      .mockResolvedValueOnce({ ok: true, parityRestored: false, failed: 6, text: '{"status":"failed","gap":"tax"}' })
+      .mockResolvedValueOnce({ ok: true, parityRestored: true, failed: 0, text: '{"status":"fixed","category":"DECIMAL_ROUNDING"}' });
     const res = await runRepairLoop({ maxRounds: 6, budget: new CallBudget(0), runRound });
     expect(res.outcome).toBe("repaired");
     expect(res.rounds).toHaveLength(2);
+    expect(res.rounds[1]).toMatchObject({ parityRestored: true, failed: 0 });
     expect(res.budget.used).toBe(4);
     // Round 2 was told what round 1 left open.
     expect(runRound.mock.calls[1]?.[0]?.gap).toBe("tax");
+  });
+
+  it("does NOT pass on a fabricated self-report when the parity re-run still fails", async () => {
+    const res = await runRepairLoop({
+      maxRounds: 2,
+      budget: new CallBudget(0),
+      // agent claims success; the independent re-run disagrees
+      runRound: async () => ({ ok: true, parityRestored: false, failed: 4, text: '{"status":"fixed"}' }),
+    });
+    expect(res.outcome).toBe("escalate");
+    expect(res.rounds.every((r) => r.parityRestored === false)).toBe(true);
+  });
+
+  it("a runRound that throws becomes a failed round, not a rejected loop", async () => {
+    const runRound = vi
+      .fn<(i: { round: number; gap: string }) => Promise<RepairRoundOutcome>>()
+      .mockRejectedValueOnce(new Error("sandbox connection reset"))
+      .mockResolvedValueOnce({ ok: true, parityRestored: true, failed: 0, text: '{"status":"fixed"}' });
+    const budget = new CallBudget(0);
+    const res = await runRepairLoop({ maxRounds: 6, budget, runRound });
+    expect(res.outcome).toBe("repaired");
+    expect(res.rounds[0]).toMatchObject({ invocationFailed: true });
+    expect(res.rounds[0]?.verdict.gap).toContain("sandbox connection reset");
+    expect(budget.used).toBe(3); // round 1: attempt only; round 2: both
   });
 
   it("the call cap actually stops the loop", async () => {
@@ -134,7 +161,7 @@ describe("runRepairLoop — stop conditions", () => {
     const runRound = vi
       .fn<(i: { round: number; gap: string }) => Promise<RepairRoundOutcome>>()
       .mockResolvedValueOnce({ ok: false, text: "", detail: "sandbox OOM" })
-      .mockResolvedValueOnce({ ok: true, text: '{"status":"fixed"}' });
+      .mockResolvedValueOnce({ ok: true, parityRestored: true, failed: 0, text: '{"status":"fixed"}' });
     const budget = new CallBudget(0);
     const res = await runRepairLoop({ maxRounds: 6, budget, runRound });
     expect(res.outcome).toBe("repaired");
@@ -144,11 +171,11 @@ describe("runRepairLoop — stop conditions", () => {
     expect(budget.used).toBe(3);
   });
 
-  it("an unparseable mh-repair verdict does not pass the loop", async () => {
+  it("an unparseable mh-repair verdict with no passing re-run does not pass the loop", async () => {
     const res = await runRepairLoop({
       maxRounds: 1,
       budget: new CallBudget(0),
-      runRound: async () => ({ ok: true, text: "yeah that should do it" }),
+      runRound: async () => ({ ok: true, parityRestored: false, text: "yeah that should do it" }),
     });
     expect(res.outcome).toBe("escalate");
   });

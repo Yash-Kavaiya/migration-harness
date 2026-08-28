@@ -61,9 +61,11 @@ export interface EvidenceBundle {
 }
 
 /**
- * Keys that must never appear anywhere in a bundle. The first five are the
- * verbatim `FORBIDDEN_KEYS` from the donor; the rest are the MigrationHarness
- * leakage vectors — `mh-parity`'s prose and any pre-computed fix.
+ * Parity-metadata keys that must never leak into the bundle's own structure —
+ * `mh-parity`'s prose (`hypothesis`), the pre-computed field diff, and the donor's
+ * verbatim list (`source`, `rationale`, `commit_message`, `builder_notes`). These
+ * are checked against the bundle's *wrapper* keys only, never against the opaque
+ * request/response payloads (a real API field named `source` is legitimate data).
  */
 export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
   "source",
@@ -72,7 +74,6 @@ export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
   "commit_message",
   "builder_notes",
   "hypothesis",
-  "category",
   "classification",
   "fix",
   "patch",
@@ -80,29 +81,50 @@ export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
   "remediation",
 ]);
 
+/** The only keys the bundle object itself may carry. */
+const BUNDLE_KEYS = new Set([
+  "migrationId",
+  "round",
+  "totalFixtures",
+  "failed",
+  "shown",
+  "omitted",
+  "mismatches",
+  "cargo",
+]);
+/** The only keys a mismatch wrapper may carry. `request`/`dotnet`/`rust` are opaque. */
+const MISMATCH_KEYS = new Set(["fixtureId", "endpoint", "request", "dotnet", "rust"]);
+const CARGO_KEYS = new Set(["exitCode", "stdout", "stderr"]);
+const ENDPOINT_KEYS = new Set(["method", "route"]);
+
 /** Keep the last `n` characters — a failing `cargo` run puts the useful part at the end. */
 export function truncateTail(text: string, n = 20_000): string {
   if (text.length <= n) return text;
   return `…(${text.length - n} chars trimmed)…\n${text.slice(-n)}`;
 }
 
-/**
- * Walk a value and throw if any object key is in {@link FORBIDDEN_KEYS}. Called on
- * every bundle before it is returned, and again by the test suite.
- */
-export function assertBlind(value: unknown, path = "bundle"): void {
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertBlind(v, `${path}[${i}]`));
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (FORBIDDEN_KEYS.has(k)) {
-        throw new Error(`evidence bundle would leak "${k}" to the repair agent (at ${path}.${k})`);
-      }
-      assertBlind(v, `${path}.${k}`);
+function assertKeys(path: string, obj: unknown, allowed: ReadonlySet<string>): void {
+  for (const k of Object.keys((obj ?? {}) as Record<string, unknown>)) {
+    if (!allowed.has(k)) {
+      const why = FORBIDDEN_KEYS.has(k) ? " (parity metadata must not reach the repair agent)" : "";
+      throw new Error(`evidence bundle carries an unexpected key "${k}" at ${path}${why}`);
     }
   }
+}
+
+/**
+ * Structural blindness check: the bundle wrapper and each mismatch wrapper may
+ * only carry their allowlisted keys, so a mapper that ever spread a raw
+ * `ParityReport` row (dragging `hypothesis`/`diff` in) fails loudly. The opaque
+ * `request`/`dotnet`/`rust` payloads are deliberately not inspected.
+ */
+export function assertBlind(bundle: EvidenceBundle): void {
+  assertKeys("bundle", bundle, BUNDLE_KEYS);
+  assertKeys("bundle.cargo", bundle.cargo, CARGO_KEYS);
+  bundle.mismatches.forEach((m, i) => {
+    assertKeys(`bundle.mismatches[${i}]`, m, MISMATCH_KEYS);
+    assertKeys(`bundle.mismatches[${i}].endpoint`, m.endpoint, ENDPOINT_KEYS);
+  });
 }
 
 export function buildEvidenceBundle(input: BuildEvidenceInput): EvidenceBundle {
@@ -167,14 +189,14 @@ export function renderEvidenceBundle(bundle: EvidenceBundle): string {
     );
   }
 
-  lines.push(
-    "",
-    "## cargo test --test parity",
-    `exit code: ${bundle.cargo.exitCode}`,
-    "```",
-    bundle.cargo.stdout || bundle.cargo.stderr || "(no output)",
-    "```",
-  );
+  const { stdout, stderr } = bundle.cargo;
+  lines.push("", "## cargo test --test parity", `exit code: ${bundle.cargo.exitCode}`);
+  if (!stdout && !stderr) {
+    lines.push("```", "(no output)", "```");
+  } else {
+    if (stdout) lines.push("stdout:", "```", stdout, "```");
+    if (stderr) lines.push("stderr:", "```", stderr, "```");
+  }
 
   return lines.join("\n");
 }
