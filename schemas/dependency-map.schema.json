@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migrationharness.dev/schemas/dependency-map.schema.json",
+  "title": "DependencyMap",
+  "description": "Optional output of mh-architect/mh-contract: .NET construct -> Rust equivalent with a confidence tag.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["migrationId", "mappings"],
+  "properties": {
+    "migrationId": { "type": "string", "pattern": "^MH-[0-9]{4}$" },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dotnet", "rust", "confidence"],
+        "properties": {
+          "dotnet": { "type": "string" },
+          "rust": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["EXACT", "SEMANTIC", "REQUIRES_REVIEW", "UNSUPPORTED"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

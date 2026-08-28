@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migrationharness.dev/schemas/fixture.schema.json",
+  "title": "Fixture",
+  "description": "A single differential-parity case. The request file plus its captured .NET golden response.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "endpoint", "request", "golden"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^fx-[0-9]{4}$" },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "route"],
+      "properties": {
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "route": { "type": "string", "pattern": "^/" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": { "type": "object", "additionalProperties": { "type": "string" } },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": {}
+      }
+    },
+    "category": {
+      "type": "string",
+      "enum": ["happy", "boundary", "adversarial", "error", "regression"]
+    },
+    "golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "body"],
+      "properties": {
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": {}
+      }
+    },
+    "generatedFrom": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string" },
+        "commit": { "type": "string" }
+      }
+    }
+  }
+}

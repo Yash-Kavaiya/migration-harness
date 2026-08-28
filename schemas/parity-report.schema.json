@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migrationharness.dev/schemas/parity-report.schema.json",
+  "title": "ParityReport",
+  "description": "Output of mh-parity: result of replaying every fixture against the generated Rust service.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["migrationId", "total", "passed", "failed", "mismatches"],
+  "properties": {
+    "migrationId": { "type": "string", "pattern": "^MH-[0-9]{4}$" },
+    "rustCommitSha": { "type": "string", "description": "Hash of the Rust tree this run was executed against." },
+    "total": { "type": "integer", "minimum": 0 },
+    "passed": { "type": "integer", "minimum": 0 },
+    "failed": { "type": "integer", "minimum": 0 },
+    "mismatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fixtureId", "input", "dotnet", "rust", "diff"],
+        "properties": {
+          "fixtureId": { "type": "string", "pattern": "^fx-[0-9]{4}$" },
+          "input": {},
+          "dotnet": {},
+          "rust": {},
+          "diff": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "expected", "actual"],
+              "properties": {
+                "path": { "type": "string" },
+                "expected": {},
+                "actual": {}
+              }
+            }
+          },
+          "hypothesis": { "type": "string", "description": "mh-parity's specific root-cause guess." }
+        }
+      }
+    }
+  }
+}

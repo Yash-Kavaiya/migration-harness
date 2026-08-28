@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migrationharness.dev/schemas/migration-manifest.schema.json",
+  "title": "MigrationManifest",
+  "description": "The immutable artifact a human licenses. Frozen once gates 1-8 pass; its SHA-256 binds the license.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "migrationId",
+    "sourceRepo",
+    "sourceCommit",
+    "targetRepo",
+    "targetBranch",
+    "files",
+    "validation",
+    "rustTreeSha256",
+    "manifestSha256"
+  ],
+  "properties": {
+    "migrationId": { "type": "string", "pattern": "^MH-[0-9]{4}$" },
+    "sourceRepo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "targetRepo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "targetBranch": { "type": "string", "minLength": 1 },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["created", "modified", "deleted"],
+      "properties": {
+        "created": { "type": "integer", "minimum": 0 },
+        "modified": { "type": "integer", "minimum": 0 },
+        "deleted": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dotnetTests", "rustTests", "parity", "clippy", "security"],
+      "properties": {
+        "dotnetTests": { "type": "string", "pattern": "^[0-9]+/[0-9]+$" },
+        "rustTests": { "type": "string", "pattern": "^[0-9]+/[0-9]+$" },
+        "parity": { "type": "string", "pattern": "^[0-9]+/[0-9]+$" },
+        "clippy": { "type": "string", "enum": ["PASS", "FAIL"] },
+        "security": { "type": "string", "enum": ["PASS", "FAIL"] }
+      }
+    },
+    "rustTreeSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of the generated Rust tree contents. Re-computed at cutover for TOCTOU verification."
+    },
+    "manifestSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of this manifest with manifestSha256 itself omitted. This is what the license binds to."
+    },
+    "frozenAt": { "type": "string", "format": "date-time" }
+  }
+}
