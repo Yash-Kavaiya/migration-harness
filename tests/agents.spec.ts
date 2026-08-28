@@ -56,30 +56,61 @@ describe("agents/ directory", () => {
 });
 
 describe("least-privilege scope (the safety backbone)", () => {
-  it("only mh-cutover can write to GitHub", () => {
+  /**
+   * The complete, exact MCP scope for every agent. The tests below assert the
+   * FULL shape — not just "doesn't contain github-write" — so that adding any
+   * differently-named server, or widening a tool selector, fails a test.
+   */
+  const EXPECTED_MCP: Record<(typeof EXPECTED)[number], AgentFile["manifest"]["mcpServers"]> = {
+    "mh-architect": [
+      { name: "github-read", enableTools: ["@read-only"], requireApprovalForTools: [] },
+    ],
+    "mh-contract": [
+      { name: "github-read", enableTools: ["@read-only"], requireApprovalForTools: [] },
+    ],
+    "mh-migrator": [],
+    "mh-parity": [],
+    "mh-repair": [],
+    "mh-security": [],
+    "mh-cutover": [
+      { name: "github-write", enableTools: ["@all"], requireApprovalForTools: ["@all"] },
+    ],
+  };
+
+  it.each(EXPECTED)("%s has exactly its allowed MCP servers and no more", (name) => {
+    const actual = (agents.get(name)!.manifest.mcpServers ?? []).map((s) => ({
+      name: s.name,
+      enableTools: s.enableTools ?? [],
+      requireApprovalForTools: s.requireApprovalForTools ?? [],
+    }));
+    const expected = (EXPECTED_MCP[name] ?? []).map((s) => ({
+      name: s!.name,
+      enableTools: s!.enableTools ?? [],
+      requireApprovalForTools: s!.requireApprovalForTools ?? [],
+    }));
+    expect(actual).toEqual(expected);
+  });
+
+  it("no non-cutover agent references any *-write MCP server", () => {
     for (const [name, a] of agents) {
-      const servers = a.manifest.mcpServers ?? [];
-      const names = servers.map((s) => s.name);
-      if (name === "mh-cutover") {
-        expect(names).toEqual(["github-write"]);
-      } else {
-        expect(names).not.toContain("github-write");
+      const writeNames = (a.manifest.mcpServers ?? [])
+        .map((s) => s.name)
+        .filter((n) => /write|push|destructive/i.test(n));
+      expect(writeNames, `${name} must not reference a write-capable MCP server`).toEqual(
+        name === "mh-cutover" ? ["github-write"] : [],
+      );
+    }
+  });
+
+  it("no agent enables a tool selector broader than its role needs", () => {
+    for (const [name, a] of agents) {
+      for (const s of a.manifest.mcpServers ?? []) {
+        if (name !== "mh-cutover") {
+          // read-side agents may only ever use @read-only
+          expect(s.enableTools ?? [], `${name}/${s.name}`).toEqual(["@read-only"]);
+          expect(s.requireApprovalForTools ?? [], `${name}/${s.name}`).toEqual([]);
+        }
       }
-    }
-  });
-
-  it("code-touching agents have no MCP access at all", () => {
-    for (const name of ["mh-migrator", "mh-parity", "mh-repair", "mh-security"] as const) {
-      expect(agents.get(name)!.manifest.mcpServers ?? []).toEqual([]);
-    }
-  });
-
-  it("discovery agents get github-read as read-only with no approval prompts", () => {
-    for (const name of ["mh-architect", "mh-contract"] as const) {
-      const server = (agents.get(name)!.manifest.mcpServers ?? [])[0];
-      expect(server?.name).toBe("github-read");
-      expect(server?.enableTools).toEqual(["@read-only"]);
-      expect(server?.requireApprovalForTools).toEqual([]);
     }
   });
 

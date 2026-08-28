@@ -37,8 +37,18 @@ interface JsonSchema {
 const schemaFiles = readdirSync(SCHEMA_DIR).filter((f) => f.endsWith(".schema.json"));
 
 describe("schemas/*.schema.json", () => {
-  it("ships the eight artifact schemas", () => {
-    expect(schemaFiles).toHaveLength(8);
+  it("ships a JSON Schema for every artifact type", () => {
+    expect(schemaFiles.sort()).toEqual([
+      "architecture.schema.json",
+      "build-report.schema.json",
+      "dependency-map.schema.json",
+      "fixture.schema.json",
+      "license.schema.json",
+      "migration-contract.schema.json",
+      "migration-manifest.schema.json",
+      "parity-report.schema.json",
+      "security-report.schema.json",
+    ]);
   });
 
   it.each(schemaFiles)("%s is valid JSON Schema 2020-12 with an $id and title", (file) => {

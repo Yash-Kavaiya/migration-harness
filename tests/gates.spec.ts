@@ -50,6 +50,34 @@ describe("canCutover is blocked by any red gate", () => {
     expect(canCutover(gates)).toBe(false);
   });
 
+  it("does NOT pass security when checks are merely skipped (must actually run)", () => {
+    const skipped = security({
+      checks: [
+        { name: "input-validation-parity", status: "skip" },
+        { name: "error-sanitization", status: "skip" },
+        { name: "secret-leakage", status: "skip" },
+        { name: "cargo-audit", status: "skip" },
+        { name: "sensitive-logging", status: "skip" },
+      ],
+      newHighSeverity: 0,
+    });
+    const gates = evaluateGates({ ...greenInputs(), security: skipped });
+    expect(gates.find((g) => g.id === "security")?.status).toBe("fail");
+    expect(canCutover(gates)).toBe(false);
+  });
+
+  it("does NOT pass security when a required check is missing entirely", () => {
+    const partial = security({
+      checks: [
+        { name: "input-validation-parity", status: "pass" },
+        { name: "secret-leakage", status: "pass" },
+      ],
+      newHighSeverity: 0,
+    });
+    const gates = evaluateGates({ ...greenInputs(), security: partial });
+    expect(gates.find((g) => g.id === "security")?.status).toBe("fail");
+  });
+
   it("blocks on a failing security check even with zero new high-severity", () => {
     const broken = security({
       checks: [

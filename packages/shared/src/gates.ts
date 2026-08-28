@@ -42,6 +42,15 @@ export interface GateInputs {
   license?: MigrationLicense | null;
 }
 
+/** The five checks a security report must carry, all passing, for gate 8. */
+export const SECURITY_CHECKS = [
+  "input-validation-parity",
+  "error-sanitization",
+  "secret-leakage",
+  "cargo-audit",
+  "sensitive-logging",
+] as const;
+
 const TITLES: Record<GateId, string> = {
   discovery: "Source discovery",
   contract: "Migration contract",
@@ -112,38 +121,51 @@ export function evaluateGates(inp: GateInputs): GateResult[] {
     );
   }
 
-  // 6 — api compatibility (every contract endpoint exercised by >=1 passing fixture path)
+  // 6 — api compatibility. Passes only when parity is 100% (so no route can be
+  // silently incompatible) AND every contract route was actually exercised by a
+  // fixture. Route attribution of failures is best-effort on top of that.
   if (!inp.contract || !inp.parity) results.push(gate("api-compatibility", 6, "pending", "needs contract + parity"));
   else {
-    const routes = new Set(inp.contract.endpoints.map((e) => `${e.method} ${e.route}`));
-    const failedRoutes = new Set(
-      inp.parity.mismatches
-        .map((m) => (m.input as { method?: string; route?: string } | undefined))
-        .filter((x): x is { method: string; route: string } => !!x?.method && !!x?.route)
-        .map((x) => `${x.method} ${x.route}`),
+    const contractRoutes = new Set(inp.contract.endpoints.map((e) => `${e.method} ${e.route}`));
+    const mismatchRoutes = new Set(
+      inp.parity.mismatches.map((m) => `${m.endpoint.method} ${m.endpoint.route}`),
     );
-    const uncovered = [...routes].filter((r) => failedRoutes.has(r));
-    results.push(
-      gate(
-        "api-compatibility",
-        6,
-        inp.parity.passed === inp.parity.total && uncovered.length === 0 ? "pass" : "fail",
-        uncovered.length === 0 ? `${routes.size} route(s) compatible` : `${uncovered.length} route(s) mismatching`,
-      ),
-    );
+    const brokenContractRoutes = [...contractRoutes].filter((r) => mismatchRoutes.has(r));
+    const parityClean = inp.parity.total > 0 && inp.parity.passed === inp.parity.total;
+
+    let detail: string;
+    if (!parityClean) {
+      detail = `parity not clean (${inp.parity.passed}/${inp.parity.total})` +
+        (brokenContractRoutes.length > 0
+          ? `; mismatches on ${brokenContractRoutes.join(", ")}`
+          : inp.parity.mismatches.length > 0
+            ? `; ${inp.parity.mismatches.length} mismatch(es) on non-contract routes`
+            : "");
+    } else {
+      detail = `${contractRoutes.size} contract route(s), parity clean`;
+    }
+    results.push(gate("api-compatibility", 6, parityClean ? "pass" : "fail", detail));
   }
 
   // 7 — clippy
   if (!inp.build) results.push(gate("clippy", 7, "pending", "no build report"));
   else results.push(gate("clippy", 7, inp.build.clippy === "PASS" ? "pass" : "fail", `clippy ${inp.build.clippy}`));
 
-  // 8 — security
+  // 8 — security. A safety gate: every one of the five checks must have actually
+  // run and passed. "skip" does not count — a report that runs nothing must not
+  // unlock the gate.
   if (!inp.security) results.push(gate("security", 8, "pending", "security scan not run"));
   else {
-    const ok = inp.security.checks.every((c) => c.status !== "fail") && inp.security.newHighSeverity === 0;
-    results.push(
-      gate("security", 8, ok ? "pass" : "fail", `${inp.security.newHighSeverity} new high-severity issue(s)`),
-    );
+    const status = new Map(inp.security.checks.map((c) => [c.name, c.status]));
+    const notPassed = SECURITY_CHECKS.filter((name) => status.get(name) !== "pass");
+    const ok = notPassed.length === 0 && inp.security.newHighSeverity === 0;
+    const detail =
+      notPassed.length > 0
+        ? `${notPassed.length} check(s) not passed: ${notPassed
+            .map((n) => `${n}=${status.get(n) ?? "missing"}`)
+            .join(", ")}`
+        : `${inp.security.newHighSeverity} new high-severity issue(s)`;
+    results.push(gate("security", 8, ok ? "pass" : "fail", detail));
   }
 
   // 9 — human license

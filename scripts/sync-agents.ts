@@ -61,6 +61,10 @@ function loadAgent(name: string): { name: string; manifest: Record<string, unkno
   };
 }
 
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Canonical JSON (sorted keys) for a stable before/after comparison. */
 function canonical(value: unknown): string {
   const sort = (v: unknown): unknown =>
@@ -86,6 +90,8 @@ async function main(): Promise<void> {
 
   const local = AGENT_NAMES.map(loadAgent);
 
+  // `client.agents.list()` returns *all* agents for the tenant (no pagination in
+  // this SDK), so a name absent here really is absent.
   const { data: remoteAgents } = await client.agents.list();
   const remoteByName = new Map(remoteAgents.map((a) => [a.name, a]));
 
@@ -93,14 +99,22 @@ async function main(): Promise<void> {
   await warnMissingReferences(client, local);
 
   let drift = 0;
+  let failed = 0;
   for (const agent of local) {
     const remote = remoteByName.get(agent.name);
     if (!remote) {
       drift++;
       console.log(`+ ${agent.name}  (missing on server — will create)`);
       if (mode === "apply") {
-        await client.agents.create({ name: agent.name, manifest: agent.manifest as never });
-        console.log(`  created`);
+        try {
+          await client.agents.create({ name: agent.name, manifest: agent.manifest as never });
+          console.log(`  created`);
+        } catch (err) {
+          // e.g. a ConflictError: the name exists but wasn't in the listing.
+          // Don't abort the whole sync over one agent.
+          failed++;
+          console.error(`  FAILED to create ${agent.name}: ${errMsg(err)} — re-run, or reconcile by hand`);
+        }
       }
       continue;
     }
@@ -113,8 +127,13 @@ async function main(): Promise<void> {
     drift++;
     console.log(`~ ${agent.name}  (manifest differs — will update)`);
     if (mode === "apply") {
-      await client.agents.update(remote.id, { manifest: agent.manifest as never });
-      console.log(`  updated`);
+      try {
+        await client.agents.update(remote.id, { manifest: agent.manifest as never });
+        console.log(`  updated`);
+      } catch (err) {
+        failed++;
+        console.error(`  FAILED to update ${agent.name}: ${errMsg(err)}`);
+      }
     }
   }
 
@@ -127,6 +146,10 @@ async function main(): Promise<void> {
 
   if (mode === "check" && drift > 0) {
     console.error(`\n${drift} agent(s) out of sync. Run: npm run sync-agents`);
+    process.exit(1);
+  }
+  if (failed > 0) {
+    console.error(`\n${failed} agent(s) failed to sync`);
     process.exit(1);
   }
   console.log(mode === "apply" ? "\ndone" : `\n${drift === 0 ? "in sync" : `${drift} change(s) pending`}`);

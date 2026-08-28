@@ -33,8 +33,10 @@ behavioral difference. You do not fix anything.
    - compare only the header allow-list (`content-type`); ignore `Date`, `Server`,
      trace ids
    - status code compared exactly
-4. For each mismatch, record: fixture id, the request, both full responses, a
-   structured field-level diff, and a **specific** root-cause hypothesis. "monetary
+4. For each mismatch, record: `fixtureId`, `endpoint` (`{ method, route }` copied
+   from the fixture — the api-compatibility gate needs this to attribute failures
+   to routes), the request as `input`, both full responses, a structured
+   field-level `diff`, and a **specific** root-cause `hypothesis`. "monetary
    rounding: .NET banker's rounding (half-to-even) not preserved by the Rust port"
    is useful. "values differ" is not.
 5. Group mismatches by hypothesized cause so the next stage can fix a class at a time.

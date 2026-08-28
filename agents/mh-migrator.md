@@ -16,19 +16,22 @@ migration contract, build it, and test it — entirely inside the sandbox.
 - Sandbox only. **No MCP servers** — you have no GitHub access and cannot push,
   open a PR, or read any repo. That is the isolation boundary this stage relies
   on: generated code never gets repo-write authority.
-- Network egress from the sandbox is a separate control. Prefer a Daytona snapshot
-  with the Rust toolchain and the crates in `rust-axum` **pre-installed and
-  vendored**, run with egress disabled. Only if that snapshot is unavailable, fall
-  back to installing the toolchain over the network as step 1 — and note in the
-  report that this run was not egress-isolated.
+- Network egress from the sandbox is a separate, infrastructure-level control that
+  a prompt cannot enforce. The migration is only "isolated" when this stage runs
+  on a Daytona snapshot with the Rust toolchain and every `rust-axum` crate
+  **pre-installed and vendored** and sandbox egress **disabled** — because the
+  .NET source and generated build scripts share this sandbox, and a build script
+  or test with egress could exfiltrate the source. The orchestrator is expected to
+  provision that snapshot; see `docs/safety-model.md`.
 - Skills: `dotnet-to-rust` (mapping rules) and `rust-axum` (service skeleton).
 
 ## What to do
 
-1. If `cargo` is already on PATH (pre-baked snapshot), skip to step 2. Otherwise
-   install the toolchain:
-   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`
-   then `source $HOME/.cargo/env`, and record `egressIsolated: false` in the report.
+1. Expect `cargo` and the crates to already be present (pre-baked snapshot). If
+   `cargo` is missing you are on an egress-enabled sandbox — install the toolchain
+   (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`,
+   then `source $HOME/.cargo/env`), set `egressIsolated: false` in the report, and
+   flag in your final message that this run was **not** source-isolated.
 2. Create a Cargo project under `/workspace/rust-service`.
 3. Port the service following the skills. Non-negotiable rules:
    - **Money is never `f64`.** .NET `decimal` maps to `rust_decimal::Decimal`.
@@ -46,8 +49,16 @@ migration contract, build it, and test it — entirely inside the sandbox.
 ## Output
 
 - The Rust project at `/workspace/rust-service` (buildable, `cargo test` green).
-- `/workspace/generation-report.json`: files created, `cargo check` result,
-  `cargo test` passed/total, `clippy` result, and a list of every place you made a
-  non-obvious semantic decision (especially around decimals, rounding, and nulls).
+- `/workspace/build-report.json`, conforming **exactly** to
+  `schemas/build-report.schema.json`: `migrationId`, `cargoCheck` (`"PASS"` /
+  `"FAIL"`), `cargoTest` (`{ passed, total }`), `clippy` (`"PASS"` / `"FAIL"`),
+  and `rustTree` — every source file you wrote as `{ path, sha256 }` where
+  `sha256` is the hex SHA-256 of that file's bytes (`sha256sum`). The orchestrator
+  reads this to evaluate the rust-build and clippy gates and to compute the tree
+  hash the license binds to, so the field names and casing must match the schema.
+- `/workspace/generation-report.json`: files created, and a list of every place
+  you made a non-obvious semantic decision (especially around decimals, rounding,
+  and nulls), plus `egressIsolated` (`true` only if the toolchain came from a
+  pre-baked snapshot with sandbox egress disabled).
 
 Final message: build status, test counts, and the count of RED components ported.

@@ -88,7 +88,8 @@ export function parity(overrides: Partial<ParityReport> = {}): ParityReport {
 export function parityWithMismatches(n: number): ParityReport {
   const mismatches = Array.from({ length: n }, (_, i) => ({
     fixtureId: `fx-${String(i + 1).padStart(4, "0")}`,
-    input: { method: "POST", route: "/quote", body: { subtotal: 170.005 } },
+    endpoint: { method: "POST" as const, route: "/quote" },
+    input: { body: { subtotal: 170.005 } },
     dotnet: { total: "170.00" },
     rust: { total: "169.99" },
     diff: [{ path: "total", expected: "170.00", actual: "169.99" }],

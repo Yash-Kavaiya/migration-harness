@@ -17,9 +17,19 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["fixtureId", "input", "dotnet", "rust", "diff"],
+        "required": ["fixtureId", "endpoint", "input", "dotnet", "rust", "diff"],
         "properties": {
           "fixtureId": { "type": "string", "pattern": "^fx-[0-9]{4}$" },
+          "endpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "route"],
+            "description": "Which route this mismatch is on — carried through from the fixture so the api-compatibility gate can attribute failures.",
+            "properties": {
+              "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+              "route": { "type": "string", "pattern": "^/" }
+            }
+          },
           "input": {},
           "dotnet": {},
           "rust": {},
