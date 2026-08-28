@@ -77,17 +77,17 @@ describe("POST /api/migrations/:id/license", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/migrations/${migrationId}/license`,
-      payload: { decision: "allow", licenseId: "LIC-MH-0001-01" },
+      payload: { decision: "allow", decidedBy: "yash@example.com" },
     });
     expect(res.statusCode).toBe(409);
   });
 
-  it("rejects a badly-formatted licenseId", async () => {
+  it("rejects a decision with no decidedBy", async () => {
     const { migrationId } = orch.start(START);
     const res = await app.inject({
       method: "POST",
       url: `/api/migrations/${migrationId}/license`,
-      payload: { decision: "allow", licenseId: "nope" },
+      payload: { decision: "allow" },
     });
     expect(res.statusCode).toBe(400);
   });

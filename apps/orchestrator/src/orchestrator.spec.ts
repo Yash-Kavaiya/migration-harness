@@ -41,7 +41,10 @@ const readyResolver: StageResolver = async ({ stage, store: s, migrationId }) =>
       cargoCheck: "PASS",
       cargoTest: { passed: 10, total: 10 },
       clippy: "PASS",
-      rustTree: [],
+      rustTree: [
+        { path: "Cargo.toml", sha256: "a".repeat(64) },
+        { path: "src/main.rs", sha256: "b".repeat(64) },
+      ],
     }, "t");
     s.putArtifact(migrationId, "parity", {
       migrationId,
@@ -161,52 +164,60 @@ describe("Orchestrator gate + license flow", () => {
 
   it("rejects a license decision when not awaiting one", () => {
     const { migrationId } = orch.start(START);
-    const res = orch.decideLicense(migrationId, { decision: "allow", licenseId: "LIC-MH-0001-01" });
+    const res = orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/not awaiting/);
   });
 
-  it("allow → runs cutover; deny → terminal", async () => {
+  it("allow → mints a license, runs cutover, consumes the license", async () => {
     orch.setStageResolver(readyResolver);
     const { migrationId } = orch.start(START);
     await orch.drain();
     orch.evaluateAndMaybeFreeze(migrationId);
 
-    orch.decideLicense(migrationId, { decision: "allow", licenseId: "LIC-MH-0001-01" });
+    const decision = orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
+    expect(decision).toMatchObject({ ok: true });
+    expect(decision.licenseId).toMatch(/^LIC-MH-0001-\d\d$/);
     await orch.drain();
 
     const view = orch.view(migrationId)!;
     expect(view.stage).toBe("complete");
     expect(view.terminal).toBe(true);
-    expect(view.licenseId).toBe("LIC-MH-0001-01");
+    expect(view.licenseId).toBe(decision.licenseId);
     expect(gateway.calls.some((c) => c.agentName === "mh-cutover")).toBe(true);
+
+    const license = store.getLicenseById(decision.licenseId!)!;
+    expect(license.uses).toBe(0);
+    expect(license.consumedAt).toBeTruthy();
+  });
+
+  it("deny → terminal, no license minted", async () => {
+    orch.setStageResolver(readyResolver);
+    const { migrationId } = orch.start(START);
+    await orch.drain();
+    orch.evaluateAndMaybeFreeze(migrationId);
+
+    orch.decideLicense(migrationId, { decision: "deny", decidedBy: "yash@example.com", reason: "wants a staging soak" });
+    await orch.drain();
+
+    expect(orch.view(migrationId)!.phase).toBe("denied");
+    expect(store.getLicense(migrationId)?.decision).toBe("deny");
+    expect(gateway.calls.some((c) => c.agentName === "mh-cutover")).toBe(false);
   });
 });
 
-describe("Orchestrator human-in-the-loop (approval)", () => {
-  it("surfaces a pending approval and resumes the stage once answered", async () => {
+describe("Orchestrator cutover approvals", () => {
+  it("answers a cutover GitHub-write approval automatically with the license", async () => {
     gateway.script("mh-cutover", { pauseForApproval: "tc-cutover-1" });
     orch.setStageResolver(readyResolver);
 
     const { migrationId } = orch.start(START);
     await orch.drain();
     orch.evaluateAndMaybeFreeze(migrationId);
-    orch.decideLicense(migrationId, { decision: "allow", licenseId: "LIC-MH-0001-01" });
+    orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
     await orch.drain();
 
-    // cutover paused for approval
-    const cutoverRun = store.stageRuns(migrationId).find((r) => r.stage === "cutover")!;
-    expect(cutoverRun.status).toBe("waiting");
-
-    const view = orch.view(migrationId)!;
-    expect(view.pendingInteractions).toHaveLength(1);
-    const [pending] = view.pendingInteractions;
-    expect(pending!.kind).toBe("approval");
-
-    const answered = orch.answerInteraction(pending!.eventId, { kind: "approval", status: "allow" });
-    expect(answered.ok).toBe(true);
-    await orch.drain();
-
+    // No human interaction needed — the license authorized the write.
     expect(orch.view(migrationId)!.stage).toBe("complete");
     expect(orch.view(migrationId)!.pendingInteractions).toHaveLength(0);
   });

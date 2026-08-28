@@ -8,11 +8,16 @@ import {
   STAGE_AGENT,
   type GateInputs,
   type GateResult,
+  type MigrationLicense,
+  type MigrationManifest,
   type MigrationStage,
   type StageOutcome,
 } from "@mh/shared";
 import type { ServerResponse } from "node:http";
 import type { AgentGateway, StageEvent } from "./trueforge.js";
+import { freezeManifest, currentRustTree, reverifyManifest } from "./manifest/manifest-service.js";
+import { routeApproval } from "./safety/approval-router.js";
+import { LicenseService } from "./safety/licenses.js";
 import { Store } from "./store.js";
 import { SseHub } from "./sse.js";
 import { buildRepairInput } from "./stages/repair-input.js";
@@ -81,6 +86,7 @@ export class Orchestrator {
   private readonly sse: SseHub;
   private readonly clock: Clock;
   private readonly defaults: NonNullable<OrchestratorDeps["defaults"]>;
+  private readonly licenses: LicenseService;
   private resolver: StageResolver = DEFAULT_RESOLVER;
   /** Per-migration relay sequence for the SSE stream. */
   private readonly seqByMigration = new Map<string, number>();
@@ -94,6 +100,7 @@ export class Orchestrator {
     this.sse = deps.sse;
     this.clock = deps.clock ?? (() => new Date().toISOString());
     this.defaults = deps.defaults ?? {};
+    this.licenses = new LicenseService(this.store);
   }
 
   setStageResolver(resolver: StageResolver): void {
@@ -149,7 +156,7 @@ export class Orchestrator {
       gates,
       readyToFreeze: readyToFreeze(gates),
       canCutover: canCutover(gates),
-      authority: authorityPanel(state.stage),
+      authority: authorityPanel(state.stage, this.store.getLicense(migrationId)),
       pendingInteractions: this.store.openInteractions(migrationId),
       history: state.history,
     };
@@ -247,31 +254,65 @@ export class Orchestrator {
   }
 
   /**
-   * Record a human licensing decision. On `allow` this is where the state machine
-   * moves past the `license` stage; the actual manifest/hash verification and the
-   * cutover run are wired in PR#9.
+   * Record a human licensing decision on the frozen manifest.
+   *
+   * `allow` re-verifies the manifest (integrity + Rust tree unchanged), mints a
+   * single-use license nonce against `manifestSha256`, advances to `cutover`, and
+   * schedules it. A failed re-verification is reported and the migration stays at
+   * `license` — nothing is minted. `deny` records the denial and ends the run.
    */
   decideLicense(
     migrationId: string,
     decision:
-      | { decision: "allow"; licenseId: string }
-      | { decision: "deny"; reason?: string | undefined },
-  ): { ok: boolean; reason?: string } {
+      | { decision: "allow"; decidedBy: string; reason?: string | undefined }
+      | { decision: "deny"; decidedBy: string; reason?: string | undefined },
+  ): { ok: boolean; reason?: string; licenseId?: string } {
     const at = this.clock();
     const state = this.store.loadState(migrationId);
     if (!state) return { ok: false, reason: "no such migration" };
     if (state.stage !== "license") return { ok: false, reason: `not awaiting a license (stage: ${state.stage})` };
 
-    const res =
-      decision.decision === "allow"
-        ? advance(state, { outcome: "allow", at, licenseId: decision.licenseId })
-        : advance(state, { outcome: "deny", at });
+    const migration = this.store.getMigration(migrationId)!;
+
+    if (decision.decision === "deny") {
+      this.licenses.recordDenial(migrationId, decision.decidedBy, decision.reason ?? "denied", at);
+      const res = advance(state, { outcome: "deny", at });
+      if (!res.ok) return { ok: false, ...(res.reason ? { reason: res.reason } : {}) };
+      this.store.saveState(migrationId, res.state, at);
+      this.relay(migrationId, "license.denied", { by: decision.decidedBy, reason: decision.reason ?? null });
+      this.relay(migrationId, "state", this.snapshot(migrationId));
+      return { ok: true };
+    }
+
+    const check = reverifyManifest(this.store, migrationId);
+    if (!check.ok) {
+      this.relay(migrationId, "license.blocked", { reason: check.reason ?? null });
+      return { ok: false, reason: check.reason ?? "manifest re-verification failed" };
+    }
+
+    const manifest = this.store.getArtifact<MigrationManifest>(migrationId, "manifest")!;
+    const license = this.licenses.mint({
+      migrationId,
+      manifest,
+      decidedBy: decision.decidedBy,
+      permittedAction: `open PR on ${migration.targetRepo}`,
+      target: `${migration.targetRepo}:${migration.targetBranch}`,
+      at,
+      reason: decision.reason,
+    });
+
+    const res = advance(state, { outcome: "allow", at, licenseId: license.licenseId });
     if (!res.ok) return { ok: false, ...(res.reason ? { reason: res.reason } : {}) };
 
     this.store.saveState(migrationId, res.state, at);
+    this.relay(migrationId, "license.granted", {
+      licenseId: license.licenseId,
+      by: decision.decidedBy,
+      manifestSha256: manifest.manifestSha256,
+    });
     this.relay(migrationId, "state", this.snapshot(migrationId));
     if (res.state.stage === "cutover") this.schedule(migrationId, "cutover");
-    return { ok: true };
+    return { ok: true, licenseId: license.licenseId };
   }
 
   /** Orchestrator-run gate + freeze step (gates 1-8). PR#8 fills in the manifest freeze. */
@@ -284,6 +325,19 @@ export class Orchestrator {
     }
     const gates = evaluateGates(this.gateInputs(migrationId));
     const ready = readyToFreeze(gates);
+
+    if (ready) {
+      const frozen = freezeManifest(this.store, migrationId, at);
+      if (!frozen.ok) {
+        this.relay(migrationId, "manifest.freeze_failed", { reason: frozen.reason ?? null });
+        return { ok: false, readyToFreeze: true, reason: frozen.reason ?? "manifest freeze failed" };
+      }
+      this.relay(migrationId, "manifest.frozen", {
+        manifestSha256: frozen.manifest!.manifestSha256,
+        rustTreeSha256: frozen.manifest!.rustTreeSha256,
+      });
+    }
+
     const res = advance(state, { outcome: ready ? "gates-green" : "gates-red", at });
     if (res.ok) {
       this.store.saveState(migrationId, res.state, at);
@@ -361,7 +415,10 @@ export class Orchestrator {
 
     if (result.outcome === "waiting") {
       this.store.updateStageRun(runId, { status: "waiting", lastSeq: result.lastSeq });
-      return; // resumed later by answerInteraction
+      // A GitHub-write approval during cutover is answered by the license, not by
+      // parking it for a human — unless the license is missing or the tree drifted.
+      if (stage === "cutover") this.routeCutoverApprovals(migrationId);
+      return;
     }
     if (result.outcome === "error" || result.outcome === "cancelled") {
       this.store.updateStageRun(runId, {
@@ -393,6 +450,52 @@ export class Orchestrator {
     this.applyOutcome(migrationId, outcome);
   }
 
+  /**
+   * Decide every open cutover approval with the license. `allow` is answered
+   * automatically (the human already authorized this by granting the license);
+   * anything else is surfaced as `license.required` / `cutover.denied` and left
+   * parked for a human — nothing is written.
+   */
+  private routeCutoverApprovals(migrationId: string): void {
+    const state = this.store.loadState(migrationId);
+    if (!state || state.stage !== "cutover") return;
+
+    const manifest = this.store.getArtifact<MigrationManifest>(migrationId, "manifest");
+    const license = this.store.getLicense(migrationId);
+    const tree = currentRustTree(this.store, migrationId);
+
+    for (const interaction of this.store.openInteractions(migrationId)) {
+      if (interaction.kind !== "approval") continue;
+      const toolCalls =
+        (interaction.payload as { toolCalls?: Array<{ id?: string; name?: string }> }).toolCalls ?? [];
+      const decision = routeApproval({ toolCalls }, { license, manifest, currentRustTree: tree });
+
+      if (decision.action === "allow") {
+        this.relay(migrationId, "license.exercised", {
+          licenseId: license?.licenseId ?? null,
+          tool: decision.toolName,
+        });
+        this.answerInteraction(interaction.eventId, { kind: "approval", status: "allow" });
+        continue;
+      }
+
+      if (decision.action === "deny") {
+        this.relay(migrationId, "cutover.denied", { tool: decision.toolName, reason: decision.reason });
+        continue;
+      }
+
+      // park — no usable license, or the Rust tree drifted after approval.
+      if (license && /TOCTOU|changed after|integrity/i.test(decision.reason)) {
+        this.licenses.invalidate(license.licenseId, this.clock(), decision.reason);
+        this.relay(migrationId, "license.invalidated", {
+          licenseId: license.licenseId,
+          reason: decision.reason,
+        });
+      }
+      this.relay(migrationId, "license.required", { reason: decision.reason, eventId: interaction.eventId });
+    }
+  }
+
   private applyOutcome(migrationId: string, outcome: StageOutcome): void {
     if (this.stopped) return;
     const at = this.clock();
@@ -402,6 +505,13 @@ export class Orchestrator {
       this.relay(migrationId, "stage.error", { detail: res.reason ?? "illegal transition" });
       return;
     }
+
+    // The license is spent the moment the PR exists — one authorization, one PR.
+    if (outcome === "cutover-done" && state.licenseId) {
+      this.licenses.consume(state.licenseId, at);
+      this.relay(migrationId, "license.consumed", { licenseId: state.licenseId });
+    }
+
     this.store.saveState(migrationId, res.state, at);
     this.relay(migrationId, "state", this.snapshot(migrationId));
 
@@ -495,16 +605,22 @@ export interface AuthorityPanel {
   repoRead: boolean;
   sandbox: boolean;
   workspaceWrite: boolean;
-  githubPush: "locked" | "active";
+  /** The Agent Authority HUD state for GitHub writes. */
+  githubPush: "locked" | "licensed" | "expired";
   merge: "locked";
 }
 
-function authorityPanel(stage: MigrationStage): AuthorityPanel {
+function authorityPanel(stage: MigrationStage, license: MigrationLicense | null): AuthorityPanel {
+  let githubPush: AuthorityPanel["githubPush"] = "locked";
+  if (license && license.decision === "allow") {
+    const spent = !!license.consumedAt || !!license.invalidatedAt || license.uses < 1;
+    githubPush = spent ? "expired" : "licensed";
+  }
   return {
     repoRead: true,
     sandbox: stage !== "cutover" && stage !== "complete",
     workspaceWrite: ["migrate", "parity", "repair", "security"].includes(stage),
-    githubPush: stage === "cutover" ? "active" : "locked",
+    githubPush,
     merge: "locked",
   };
 }

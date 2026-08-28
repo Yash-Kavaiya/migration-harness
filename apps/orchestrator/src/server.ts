@@ -12,8 +12,8 @@ const startBody = z.object({
 });
 
 const licenseBody = z.union([
-  z.object({ decision: z.literal("allow"), licenseId: z.string().regex(/^LIC-MH-\d{4}-\d{2}$/) }),
-  z.object({ decision: z.literal("deny"), reason: z.string().optional() }),
+  z.object({ decision: z.literal("allow"), decidedBy: z.string().min(1), reason: z.string().optional() }),
+  z.object({ decision: z.literal("deny"), decidedBy: z.string().min(1), reason: z.string().optional() }),
 ]);
 
 const answerBody = z.union([

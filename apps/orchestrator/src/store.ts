@@ -382,9 +382,23 @@ export class Store {
 
   getLicense(migrationId: string): MigrationLicense | null {
     const r = this.db
-      .prepare("SELECT json FROM licenses WHERE migration_id = ? ORDER BY created_at DESC LIMIT 1")
+      .prepare("SELECT json FROM licenses WHERE migration_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(migrationId) as Row | undefined;
     return r ? (JSON.parse(r.json as string) as MigrationLicense) : null;
+  }
+
+  getLicenseById(licenseId: string): MigrationLicense | null {
+    const r = this.db
+      .prepare("SELECT json FROM licenses WHERE license_id = ?")
+      .get(licenseId) as Row | undefined;
+    return r ? (JSON.parse(r.json as string) as MigrationLicense) : null;
+  }
+
+  countLicenses(migrationId: string): number {
+    const r = this.db
+      .prepare("SELECT COUNT(*) AS n FROM licenses WHERE migration_id = ?")
+      .get(migrationId) as Row | undefined;
+    return r ? Number(r.n) : 0;
   }
 
   // ---- pending interactions -----------------------------------------
