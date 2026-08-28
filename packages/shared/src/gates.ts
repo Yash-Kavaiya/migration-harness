@@ -121,48 +121,63 @@ export function evaluateGates(inp: GateInputs): GateResult[] {
     );
   }
 
-  // 6 — api compatibility. Passes only when parity is 100% (so no route can be
-  // silently incompatible) AND every contract route was actually exercised by a
-  // fixture. Route attribution of failures is best-effort on top of that.
+  // 6 — api compatibility. Passes only when BOTH hold:
+  //   (a) every contract route was actually exercised — it appears in the parity
+  //       report's per-route tally with total > 0 and passed === total; and
+  //   (b) aggregate parity is 100%.
+  // A contract route with no fixtures fails the gate rather than passing silently.
   if (!inp.contract || !inp.parity) results.push(gate("api-compatibility", 6, "pending", "needs contract + parity"));
   else {
-    const contractRoutes = new Set(inp.contract.endpoints.map((e) => `${e.method} ${e.route}`));
-    const mismatchRoutes = new Set(
-      inp.parity.mismatches.map((m) => `${m.endpoint.method} ${m.endpoint.route}`),
+    const contractRoutes: string[] = inp.contract.endpoints.map((e) => `${e.method} ${e.route}`);
+    // Defensive: the orchestrator stores artifacts as raw JSON, so guard against a
+    // report that predates the byRoute field rather than throwing on every view().
+    const byRoute = (inp.parity.byRoute ?? []) as ParityReport["byRoute"];
+    const routeTally = new Map<string, { passed: number; total: number }>(
+      byRoute.map((r) => [`${r.method} ${r.route}`, r]),
     );
-    const brokenContractRoutes = [...contractRoutes].filter((r) => mismatchRoutes.has(r));
+    const uncovered = contractRoutes.filter((r) => {
+      const t = routeTally.get(r);
+      return !t || t.total === 0;
+    });
+    const brokenRoutes = contractRoutes.filter((r) => {
+      const t = routeTally.get(r);
+      return t && t.total > 0 && t.passed !== t.total;
+    });
     const parityClean = inp.parity.total > 0 && inp.parity.passed === inp.parity.total;
+    const ok = uncovered.length === 0 && brokenRoutes.length === 0 && parityClean;
 
     let detail: string;
-    if (!parityClean) {
-      detail = `parity not clean (${inp.parity.passed}/${inp.parity.total})` +
-        (brokenContractRoutes.length > 0
-          ? `; mismatches on ${brokenContractRoutes.join(", ")}`
-          : inp.parity.mismatches.length > 0
-            ? `; ${inp.parity.mismatches.length} mismatch(es) on non-contract routes`
-            : "");
-    } else {
-      detail = `${contractRoutes.size} contract route(s), parity clean`;
-    }
-    results.push(gate("api-compatibility", 6, parityClean ? "pass" : "fail", detail));
+    if (uncovered.length > 0) detail = `${uncovered.length} contract route(s) never tested: ${uncovered.join(", ")}`;
+    else if (brokenRoutes.length > 0) detail = `mismatches on ${brokenRoutes.join(", ")}`;
+    else if (!parityClean) detail = `parity not clean (${inp.parity.passed}/${inp.parity.total})`;
+    else detail = `${contractRoutes.length} contract route(s) covered, parity clean`;
+
+    results.push(gate("api-compatibility", 6, ok ? "pass" : "fail", detail));
   }
 
   // 7 — clippy
   if (!inp.build) results.push(gate("clippy", 7, "pending", "no build report"));
   else results.push(gate("clippy", 7, inp.build.clippy === "PASS" ? "pass" : "fail", `clippy ${inp.build.clippy}`));
 
-  // 8 — security. A safety gate: every one of the five checks must have actually
-  // run and passed. "skip" does not count — a report that runs nothing must not
-  // unlock the gate.
+  // 8 — security. A safety gate. Every one of the five checks must have a `pass`
+  // entry and NO `fail` entry (the schema allows duplicate names, so we can't just
+  // take the last status — any explicit failure sinks the gate). "skip" never
+  // counts as passing.
   if (!inp.security) results.push(gate("security", 8, "pending", "security scan not run"));
   else {
-    const status = new Map(inp.security.checks.map((c) => [c.name, c.status]));
-    const notPassed = SECURITY_CHECKS.filter((name) => status.get(name) !== "pass");
-    const ok = notPassed.length === 0 && inp.security.newHighSeverity === 0;
+    const anyFail = inp.security.checks.some((c) => c.status === "fail");
+    const passedNames = new Set(
+      inp.security.checks.filter((c) => c.status === "pass").map((c) => c.name),
+    );
+    const failedNames = new Set(
+      inp.security.checks.filter((c) => c.status === "fail").map((c) => c.name),
+    );
+    const notOk = SECURITY_CHECKS.filter((n) => !passedNames.has(n) || failedNames.has(n));
+    const ok = !anyFail && notOk.length === 0 && inp.security.newHighSeverity === 0;
     const detail =
-      notPassed.length > 0
-        ? `${notPassed.length} check(s) not passed: ${notPassed
-            .map((n) => `${n}=${status.get(n) ?? "missing"}`)
+      anyFail || notOk.length > 0
+        ? `checks not satisfied: ${(anyFail ? [...failedNames].map((n) => `${n}=fail`) : [])
+            .concat(notOk.filter((n) => !failedNames.has(n)).map((n) => `${n}=missing/skip`))
             .join(", ")}`
         : `${inp.security.newHighSeverity} new high-severity issue(s)`;
     results.push(gate("security", 8, ok ? "pass" : "fail", detail));

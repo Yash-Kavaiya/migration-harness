@@ -73,12 +73,19 @@ export function contract(overrides: Partial<MigrationContract> = {}): MigrationC
   });
 }
 
+/** byRoute tally covering the two routes in `contract()`, all passing. */
+const CLEAN_BY_ROUTE = [
+  { method: "GET" as const, route: "/health", passed: 20, total: 20 },
+  { method: "POST" as const, route: "/quote", passed: 200, total: 200 },
+];
+
 export function parity(overrides: Partial<ParityReport> = {}): ParityReport {
   return parityReportSchema.parse({
     migrationId: MIGRATION_ID,
     total: 220,
     passed: 220,
     failed: 0,
+    byRoute: CLEAN_BY_ROUTE,
     mismatches: [],
     ...overrides,
   });
@@ -95,7 +102,16 @@ export function parityWithMismatches(n: number): ParityReport {
     diff: [{ path: "total", expected: "170.00", actual: "169.99" }],
     hypothesis: "monetary rounding: .NET banker's rounding vs Rust half-up",
   }));
-  return parity({ total: 220, passed: 220 - n, failed: n, mismatches });
+  return parity({
+    total: 220,
+    passed: 220 - n,
+    failed: n,
+    byRoute: [
+      { method: "GET", route: "/health", passed: 20, total: 20 },
+      { method: "POST", route: "/quote", passed: 200 - n, total: 200 },
+    ],
+    mismatches,
+  });
 }
 
 export function security(overrides: Partial<SecurityReport> = {}): SecurityReport {

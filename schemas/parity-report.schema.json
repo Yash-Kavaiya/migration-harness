@@ -5,13 +5,28 @@
   "description": "Output of mh-parity: result of replaying every fixture against the generated Rust service.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["migrationId", "total", "passed", "failed", "mismatches"],
+  "required": ["migrationId", "total", "passed", "failed", "byRoute", "mismatches"],
   "properties": {
     "migrationId": { "type": "string", "pattern": "^MH-[0-9]{4}$" },
     "rustCommitSha": { "type": "string", "description": "Hash of the Rust tree this run was executed against." },
     "total": { "type": "integer", "minimum": 0 },
     "passed": { "type": "integer", "minimum": 0 },
     "failed": { "type": "integer", "minimum": 0 },
+    "byRoute": {
+      "type": "array",
+      "description": "Per-route fixture tally. The api-compatibility gate checks that every contract route appears here with passed === total (so a route with no fixtures cannot pass the gate).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "route", "passed", "total"],
+        "properties": {
+          "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          "route": { "type": "string", "pattern": "^/" },
+          "passed": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
     "mismatches": {
       "type": "array",
       "items": {

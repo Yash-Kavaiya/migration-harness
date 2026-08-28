@@ -94,6 +94,39 @@ describe("canCutover is blocked by any red gate", () => {
     expect(canCutover(gates)).toBe(false);
   });
 
+  it("blocks api-compatibility when a contract route was never exercised by a fixture", () => {
+    const inputs = greenInputs();
+    const gates = evaluateGates({
+      ...inputs,
+      // parity is 100% clean, but byRoute only covers /health — /quote is untested
+      parity: {
+        ...inputs.parity,
+        byRoute: [{ method: "GET", route: "/health", passed: 20, total: 20 }],
+      },
+    });
+    const g6 = gates.find((g) => g.id === "api-compatibility")!;
+    expect(g6.status).toBe("fail");
+    expect(g6.detail).toMatch(/never tested/);
+    expect(canCutover(gates)).toBe(false);
+  });
+
+  it("blocks security when a failed check is followed by a passing entry of the same name", () => {
+    const dup = security({
+      checks: [
+        { name: "cargo-audit", status: "fail", detail: "RUSTSEC-2024-xxxx" },
+        { name: "cargo-audit", status: "pass" },
+        { name: "input-validation-parity", status: "pass" },
+        { name: "error-sanitization", status: "pass" },
+        { name: "secret-leakage", status: "pass" },
+        { name: "sensitive-logging", status: "pass" },
+      ],
+      newHighSeverity: 0,
+    });
+    const gates = evaluateGates({ ...greenInputs(), security: dup });
+    expect(gates.find((g) => g.id === "security")?.status).toBe("fail");
+    expect(canCutover(gates)).toBe(false);
+  });
+
   it("blocks on a red clippy result", () => {
     const inputs = greenInputs();
     const gates = evaluateGates({ ...inputs, build: { ...inputs.build, clippy: "FAIL" } });

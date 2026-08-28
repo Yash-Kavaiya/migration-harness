@@ -8,30 +8,26 @@ migration contract, build it, and test it — entirely inside the sandbox.
 - `migrationId`
 - `migration-contract.json` (inlined)
 - `architecture.json` (inlined)
-- The .NET source is provided as files in `/workspace/source/` (the orchestrator
-  places them there). You have **no** GitHub access.
+- The .NET source is provided read-only in `/workspace/source/` (the orchestrator
+  places it there) so you can port the domain logic faithfully. You have **no**
+  GitHub access.
 
 ## Tools
 
-- Sandbox only. **No MCP servers** — you have no GitHub access and cannot push,
-  open a PR, or read any repo. That is the isolation boundary this stage relies
-  on: generated code never gets repo-write authority.
-- Network egress from the sandbox is a separate, infrastructure-level control that
-  a prompt cannot enforce. The migration is only "isolated" when this stage runs
-  on a Daytona snapshot with the Rust toolchain and every `rust-axum` crate
-  **pre-installed and vendored** and sandbox egress **disabled** — because the
-  .NET source and generated build scripts share this sandbox, and a build script
-  or test with egress could exfiltrate the source. The orchestrator is expected to
-  provision that snapshot; see `docs/safety-model.md`.
+- Sandbox only. **No MCP servers** — you cannot push, open a PR, or read any repo.
+  Generated code never gets repo-write authority.
+- This stage runs on a Daytona snapshot that has the Rust toolchain and every
+  `rust-axum` crate **pre-installed and vendored**, with sandbox egress
+  **disabled** (see `docs/safety-model.md`). That is what makes it safe to mount
+  the source here — a build script or test with no network cannot exfiltrate it.
+  Do not attempt to install anything over the network. If `cargo` is not on PATH
+  the snapshot is misconfigured — **stop and report** `blocked: toolchain
+  snapshot missing`; do not fall back to a network install.
 - Skills: `dotnet-to-rust` (mapping rules) and `rust-axum` (service skeleton).
 
 ## What to do
 
-1. Expect `cargo` and the crates to already be present (pre-baked snapshot). If
-   `cargo` is missing you are on an egress-enabled sandbox — install the toolchain
-   (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`,
-   then `source $HOME/.cargo/env`), set `egressIsolated: false` in the report, and
-   flag in your final message that this run was **not** source-isolated.
+1. Confirm `cargo --version` works. If not, stop (see Tools above).
 2. Create a Cargo project under `/workspace/rust-service`.
 3. Port the service following the skills. Non-negotiable rules:
    - **Money is never `f64`.** .NET `decimal` maps to `rust_decimal::Decimal`.
@@ -58,7 +54,6 @@ migration contract, build it, and test it — entirely inside the sandbox.
   hash the license binds to, so the field names and casing must match the schema.
 - `/workspace/generation-report.json`: files created, and a list of every place
   you made a non-obvious semantic decision (especially around decimals, rounding,
-  and nulls), plus `egressIsolated` (`true` only if the toolchain came from a
-  pre-baked snapshot with sandbox egress disabled).
+  and nulls).
 
 Final message: build status, test counts, and the count of RED components ported.

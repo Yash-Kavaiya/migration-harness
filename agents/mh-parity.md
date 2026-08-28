@@ -40,9 +40,13 @@ behavioral difference. You do not fix anything.
    rounding: .NET banker's rounding (half-to-even) not preserved by the Rust port"
    is useful. "values differ" is not.
 5. Group mismatches by hypothesized cause so the next stage can fix a class at a time.
+6. Tally results per route into `byRoute` — `{ method, route, passed, total }` for
+   every route that appears in the fixture set. A contract route missing from this
+   list (or with `total: 0`) fails the api-compatibility gate, so make sure the
+   fixture set actually exercises every endpoint.
 
 ## Output
 
 `/workspace/parity-report.json`, conforming to `schemas/parity-report.schema.json`:
-`total`, `passed`, `failed`, and `mismatches[]`. Final message: pass rate, and the
-distinct root-cause classes you found.
+`total`, `passed`, `failed`, `byRoute[]`, and `mismatches[]`. Final message: pass
+rate, per-route coverage, and the distinct root-cause classes you found.
