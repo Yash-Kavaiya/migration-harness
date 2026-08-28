@@ -98,9 +98,13 @@ describe("canCutover is blocked by any red gate", () => {
     const inputs = greenInputs();
     const gates = evaluateGates({
       ...inputs,
-      // parity is 100% clean, but byRoute only covers /health — /quote is untested
+      // parity is 100% clean and reconciles, but only /health has fixtures —
+      // /quote (also in the contract) was never exercised
       parity: {
         ...inputs.parity,
+        total: 20,
+        passed: 20,
+        failed: 0,
         byRoute: [{ method: "GET", route: "/health", passed: 20, total: 20 }],
       },
     });
@@ -108,6 +112,45 @@ describe("canCutover is blocked by any red gate", () => {
     expect(g6.status).toBe("fail");
     expect(g6.detail).toMatch(/never tested/);
     expect(canCutover(gates)).toBe(false);
+  });
+
+  it("blocks api-compatibility when a duplicate route entry hides a failing tally", () => {
+    const inputs = greenInputs();
+    const gates = evaluateGates({
+      ...inputs,
+      parity: {
+        ...inputs.parity,
+        total: 40,
+        passed: 30,
+        failed: 10,
+        byRoute: [
+          { method: "GET", route: "/health", passed: 20, total: 20 },
+          { method: "POST", route: "/quote", passed: 0, total: 10 }, // failing
+          { method: "POST", route: "/quote", passed: 10, total: 10 }, // "passing" duplicate
+        ],
+      },
+    });
+    expect(gates.find((g) => g.id === "api-compatibility")?.status).toBe("fail");
+  });
+
+  it("blocks api-compatibility when byRoute tallies do not reconcile with the totals", () => {
+    const inputs = greenInputs();
+    const gates = evaluateGates({
+      ...inputs,
+      parity: {
+        ...inputs.parity,
+        total: 500, // claims 500 fixtures...
+        passed: 500,
+        failed: 0,
+        byRoute: [
+          { method: "GET", route: "/health", passed: 20, total: 20 },
+          { method: "POST", route: "/quote", passed: 200, total: 200 }, // ...but only 220 accounted for
+        ],
+      },
+    });
+    const g6 = gates.find((g) => g.id === "api-compatibility")!;
+    expect(g6.status).toBe("fail");
+    expect(g6.detail).toMatch(/reconcile/);
   });
 
   it("blocks security when a failed check is followed by a passing entry of the same name", () => {

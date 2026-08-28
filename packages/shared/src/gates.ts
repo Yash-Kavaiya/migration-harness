@@ -132,23 +132,36 @@ export function evaluateGates(inp: GateInputs): GateResult[] {
     // Defensive: the orchestrator stores artifacts as raw JSON, so guard against a
     // report that predates the byRoute field rather than throwing on every view().
     const byRoute = (inp.parity.byRoute ?? []) as ParityReport["byRoute"];
-    const routeTally = new Map<string, { passed: number; total: number }>(
-      byRoute.map((r) => [`${r.method} ${r.route}`, r]),
-    );
-    const uncovered = contractRoutes.filter((r) => {
-      const t = routeTally.get(r);
-      return !t || t.total === 0;
-    });
+
+    // SUM all entries per route — a duplicate key must not let a later passing
+    // tally overwrite an earlier failing one.
+    const tallyByRoute = new Map<string, { passed: number; total: number }>();
+    for (const r of byRoute) {
+      const key = `${r.method} ${r.route}`;
+      const acc = tallyByRoute.get(key) ?? { passed: 0, total: 0 };
+      tallyByRoute.set(key, { passed: acc.passed + r.passed, total: acc.total + r.total });
+    }
+
+    const uncovered = contractRoutes.filter((r) => (tallyByRoute.get(r)?.total ?? 0) === 0);
     const brokenRoutes = contractRoutes.filter((r) => {
-      const t = routeTally.get(r);
+      const t = tallyByRoute.get(r);
       return t && t.total > 0 && t.passed !== t.total;
     });
+
+    // The per-route tallies must reconcile with the aggregate, or the report is
+    // internally inconsistent and can't be trusted.
+    const routeTotal = byRoute.reduce((s, r) => s + r.total, 0);
+    const routePassed = byRoute.reduce((s, r) => s + r.passed, 0);
+    const reconciles = routeTotal === inp.parity.total && routePassed === inp.parity.passed;
+
     const parityClean = inp.parity.total > 0 && inp.parity.passed === inp.parity.total;
-    const ok = uncovered.length === 0 && brokenRoutes.length === 0 && parityClean;
+    const ok =
+      uncovered.length === 0 && brokenRoutes.length === 0 && reconciles && parityClean;
 
     let detail: string;
     if (uncovered.length > 0) detail = `${uncovered.length} contract route(s) never tested: ${uncovered.join(", ")}`;
     else if (brokenRoutes.length > 0) detail = `mismatches on ${brokenRoutes.join(", ")}`;
+    else if (!reconciles) detail = `byRoute tally (${routePassed}/${routeTotal}) does not reconcile with totals (${inp.parity.passed}/${inp.parity.total})`;
     else if (!parityClean) detail = `parity not clean (${inp.parity.passed}/${inp.parity.total})`;
     else detail = `${contractRoutes.length} contract route(s) covered, parity clean`;
 
