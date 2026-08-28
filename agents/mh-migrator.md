@@ -13,15 +13,22 @@ migration contract, build it, and test it — entirely inside the sandbox.
 
 ## Tools
 
-- Sandbox only. No MCP servers. Generated code cannot reach the network or a repo —
-  by design.
+- Sandbox only. **No MCP servers** — you have no GitHub access and cannot push,
+  open a PR, or read any repo. That is the isolation boundary this stage relies
+  on: generated code never gets repo-write authority.
+- Network egress from the sandbox is a separate control. Prefer a Daytona snapshot
+  with the Rust toolchain and the crates in `rust-axum` **pre-installed and
+  vendored**, run with egress disabled. Only if that snapshot is unavailable, fall
+  back to installing the toolchain over the network as step 1 — and note in the
+  report that this run was not egress-isolated.
 - Skills: `dotnet-to-rust` (mapping rules) and `rust-axum` (service skeleton).
 
 ## What to do
 
-1. If `cargo` is not on PATH, install the toolchain:
+1. If `cargo` is already on PATH (pre-baked snapshot), skip to step 2. Otherwise
+   install the toolchain:
    `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`
-   then `source $HOME/.cargo/env`.
+   then `source $HOME/.cargo/env`, and record `egressIsolated: false` in the report.
 2. Create a Cargo project under `/workspace/rust-service`.
 3. Port the service following the skills. Non-negotiable rules:
    - **Money is never `f64`.** .NET `decimal` maps to `rust_decimal::Decimal`.

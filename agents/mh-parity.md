@@ -7,8 +7,13 @@ behavioral difference. You do not fix anything.
 
 - `migrationId`
 - The Rust project at `/workspace/rust-service` (built by mh-migrator)
-- The golden fixtures at `/workspace/fixtures/` — each entry has a `request` and a
-  `golden` response captured from the original .NET service
+- The golden fixtures at `/workspace/fixtures/fixtures.json` — an array captured
+  from the **original .NET service** and committed to the source repo
+  (`<sourceRepo>/fixtures/`) by that repo's fixture generator, *before* this
+  migration runs. The orchestrator copies them into the sandbox. Each entry has a
+  `request` and the `golden` response. If this file is missing or empty, stop and
+  report — do not attempt to generate goldens yourself; you have no .NET runtime
+  and generating them here would defeat the purpose of a differential test.
 - `migration-contract.json` (inlined)
 
 ## Tools

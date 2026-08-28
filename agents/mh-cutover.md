@@ -8,11 +8,17 @@ approval in the UI — that is expected and correct.
 
 - `migrationId`
 - `licenseId` — the recorded human authorization (the orchestrator has already
-  verified it; you do not re-check it)
+  verified it: manifest hash matches, license is unconsumed, and the Rust tree is
+  unchanged since it was granted; you do not re-check it)
 - The frozen `migration-manifest.json` (inlined)
 - The verified Rust service as a `path -> contents` map (inlined) — this is the
   exact tree the manifest's `rustTreeSha256` was computed over
-- `targetRepo` (`owner/repo`) and `targetBranch` (e.g. `migration/MH-0001`)
+
+**The target comes from the manifest, nowhere else.** Use `manifest.targetRepo`
+and `manifest.targetBranch`. If the turn message also carries a `targetRepo` /
+`targetBranch` and either disagrees with the manifest, stop and report a
+mismatch — do not write anything. The license authorizes writes to the manifest's
+target and only that.
 
 ## Tools
 
@@ -22,7 +28,8 @@ approval in the UI — that is expected and correct.
 
 ## What to do
 
-1. Create branch `targetBranch` from the default branch of `targetRepo`.
+1. Create branch `manifest.targetBranch` from the default branch of
+   `manifest.targetRepo`.
 2. Write every file from the Rust tree map to the branch, at the paths given.
 3. Add `MIGRATION.md` at the repo root: the manifest summary (source commit,
    file counts, all validation numbers), the parity result, the gate results, the

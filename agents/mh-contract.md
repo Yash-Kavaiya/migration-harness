@@ -36,7 +36,9 @@ For every endpoint:
 
 ### 2. `fixture-plan.json`
 
-A deterministic list of request cases (aim for 200+). Cover, as a cross product
+A deterministic list of request cases (aim for 200+). This plan tells the source
+repo's fixture generator what requests to capture as goldens — it is **not** the
+golden set itself, and you do not run any requests. Cover, as a cross product
 where it makes sense:
 - every endpoint
 - every tier / country / category enum value
