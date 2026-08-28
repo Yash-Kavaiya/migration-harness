@@ -16,9 +16,12 @@ until a human licenses the exact verified migration manifest.**
 ## Status
 
 Early build for the **WeMakeDevs × TrueForge "Agent Harness Hackathon"**.
-See [`docs/`](docs/) for the architecture, safety model, and demo script, and
-[`.claude/plans/`](../.claude/plans/) / [`docs/strategy-notes.md`](docs/strategy-notes.md)
-for background.
+
+- [`docs/architecture.md`](docs/architecture.md) — the TrueForge / orchestrator split, the stage pipeline, the nine gates
+- [`docs/safety-model.md`](docs/safety-model.md) — GREEN / AMBER / RED, the five layers on repo writes, TOCTOU, the one-time license
+- [`docs/demo-script.md`](docs/demo-script.md) — the ~3-minute walkthrough
+- [`docs/qodo.md`](docs/qodo.md) — the review process
+- [`docs/strategy-notes.md`](docs/strategy-notes.md) — original background dump
 
 ## Layout
 
@@ -43,10 +46,15 @@ npm test                  # unit + safety tests (vitest)
 
 ## Qodo Code Review Evidence
 
-Every substantive change lands through a Qodo-reviewed pull request. Merged PRs with review
-threads:
+Every substantive change lands through a pull request reviewed by **Qodo Merge**
+(`/agentic_review`) before it merges — no direct pushes to `main`. See
+[`docs/qodo.md`](docs/qodo.md) for the process.
 
-- _populated as PRs merge_
+Merged Qodo-reviewed PRs:
+
+| PR | Scope | Qodo findings addressed |
+|---|---|---|
+| _populated as PRs merge_ | | |
 
 ## License
 
