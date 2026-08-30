@@ -1,3 +1,4 @@
+import { initialState } from "@mh/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Orchestrator, type StageResolver } from "./orchestrator.js";
 import { SseHub } from "./sse.js";
@@ -65,7 +66,7 @@ const readyResolver: StageResolver = async ({ stage, store: s, migrationId }) =>
       ],
       newHighSeverity: 0,
     }, "t");
-    s.putArtifact(migrationId, "sourceTests", { discovered: 10, representedAsFixtures: 50 }, "t");
+    s.putArtifact(migrationId, "sourceTests", { discovered: 10, passed: 10, representedAsFixtures: 50 }, "t");
   }
   return stage === "repair" ? "repaired" : stage === "cutover" ? "cutover-done" : "ok";
 };
@@ -132,9 +133,83 @@ describe("Orchestrator pipeline (default happy-path resolver)", () => {
     const events = orch.events(migrationId, 0);
     expect(events.some((e) => e.type === "turn.created")).toBe(true);
     expect(events.some((e) => e.type === "turn.done")).toBe(true);
+    expect(events.some((e) => e.type === "stage.started")).toBe(true);
+    expect(events.some((e) => e.type === "state")).toBe(true);
     // strictly increasing local sequence
     const seqs = events.map((e) => e.seq);
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(new Set(seqs).size).toBe(seqs.length);
+  });
+
+  it("lists migrations newest first with their current stage and phase", async () => {
+    const first = orch.start(START);
+    const second = orch.start({ ...START, sourceCommit: "def5678" });
+    await orch.drain();
+
+    expect(orch.list().map((migration) => migration.migrationId)).toEqual([
+      second.migrationId,
+      first.migrationId,
+    ]);
+    expect(orch.list()[0]).toMatchObject({ stage: "freeze", phase: "running" });
+  });
+
+  it("exposes stored evidence in the migration view", async () => {
+    orch.setStageResolver(readyResolver);
+    const { migrationId } = orch.start(START);
+    await orch.drain();
+
+    expect(orch.view(migrationId)?.evidence).toMatchObject({
+      architecture: { migrationId },
+      build: { cargoCheck: "PASS" },
+      parity: { passed: 50, total: 50 },
+      security: { newHighSeverity: 0 },
+    });
+  });
+});
+
+describe("Orchestrator restart recovery", () => {
+  it("resumes an in-flight TrueForge turn from its persisted cursor", async () => {
+    store.createMigration({
+      id: "MH-0001",
+      sourceRepo: START.sourceRepo,
+      sourceCommit: START.sourceCommit,
+      sourcePath: START.sourcePath,
+      targetRepo: START.sourceRepo,
+      targetBranch: "main",
+      at: clock(),
+    });
+    store.saveState("MH-0001", initialState("MH-0001"), clock());
+    const runId = store.startStageRun("MH-0001", "discover", "mh-architect", clock());
+    store.attachSession(runId, "sess-existing", "turn-existing");
+    store.updateStageRun(runId, { lastSeq: 17 });
+
+    await orch.resumeIncomplete();
+    await orch.drain();
+
+    expect(gateway.calls.some((call) => call.method === "resume")).toBe(true);
+    expect(orch.view("MH-0001")?.stage).toBe("freeze");
+  });
+
+  it("leaves a suspended interaction parked for the human", async () => {
+    store.createMigration({
+      id: "MH-0001",
+      sourceRepo: START.sourceRepo,
+      sourceCommit: START.sourceCommit,
+      sourcePath: START.sourcePath,
+      targetRepo: START.sourceRepo,
+      targetBranch: "main",
+      at: clock(),
+    });
+    store.saveState("MH-0001", initialState("MH-0001"), clock());
+    const runId = store.startStageRun("MH-0001", "discover", "mh-architect", clock());
+    store.attachSession(runId, "sess-existing", "turn-existing");
+    store.updateStageRun(runId, { status: "waiting", lastSeq: 17 });
+
+    await orch.resumeIncomplete();
+    await orch.drain();
+
+    expect(gateway.calls.some((call) => call.method === "resume")).toBe(false);
+    expect(orch.view("MH-0001")?.stage).toBe("discover");
   });
 });
 
@@ -160,6 +235,25 @@ describe("Orchestrator gate + license flow", () => {
     const freeze = orch.evaluateAndMaybeFreeze(migrationId);
     expect(freeze).toMatchObject({ ok: true, readyToFreeze: false });
     expect(orch.view(migrationId)!.phase).toBe("blocked");
+  });
+
+  it("lets a human redirect a blocked migration to an earlier agent stage", async () => {
+    const { migrationId } = orch.start(START);
+    await orch.drain();
+    orch.evaluateAndMaybeFreeze(migrationId);
+
+    expect(orch.retryBlocked(migrationId, "parity")).toEqual({ ok: true });
+    expect(orch.view(migrationId)).toMatchObject({ stage: "parity", phase: "running" });
+    await orch.drain();
+    expect(orch.view(migrationId)?.stage).toBe("freeze");
+  });
+
+  it("rejects redirects while a migration is not blocked", () => {
+    const { migrationId } = orch.start(START);
+    expect(orch.retryBlocked(migrationId, "parity")).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/blocked/),
+    });
   });
 
   it("rejects a license decision when not awaiting one", () => {
@@ -220,5 +314,30 @@ describe("Orchestrator cutover approvals", () => {
     // No human interaction needed — the license authorized the write.
     expect(orch.view(migrationId)!.stage).toBe("complete");
     expect(orch.view(migrationId)!.pendingInteractions).toHaveLength(0);
+  });
+
+  it("continues routing every licensed write until the pull request is opened", async () => {
+    gateway.script("mh-cutover", {
+      approvalSequence: [
+        { id: "tc-branch", name: "create_branch" },
+        { id: "tc-files", name: "push_files" },
+        { id: "tc-pr", name: "create_pull_request" },
+      ],
+    });
+    orch.setStageResolver(readyResolver);
+
+    const { migrationId } = orch.start(START);
+    await orch.drain();
+    orch.evaluateAndMaybeFreeze(migrationId);
+    orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
+    await orch.drain();
+
+    expect(orch.view(migrationId)!.stage).toBe("complete");
+    expect(gateway.calls.filter((call) => call.method === "reply")).toHaveLength(3);
+    expect(orch.view(migrationId)!.evidence.cutover).toMatchObject({
+      status: "approved",
+      tool: "create_pull_request",
+      toolCallId: "tc-pr",
+    });
   });
 });

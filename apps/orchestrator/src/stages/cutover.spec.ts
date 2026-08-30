@@ -45,7 +45,7 @@ const contract = {
     },
   ],
 };
-const fixturePlan = { fixtures: 384, dotnetTestCases: 34 };
+const fixturePlan = { fixtures: 384, dotnetTestCases: 34, dotnetTestsPassed: 34 };
 const RUST_TREE = [
   { path: "Cargo.toml", sha256: "a".repeat(64) },
   { path: "src/main.rs", sha256: "b".repeat(64) },
@@ -202,7 +202,7 @@ describe("modified_manifest_invalidates_approval", () => {
     await orch.drain();
 
     const view = orch.view(migrationId)!;
-    expect(view.stage).not.toBe("complete");
+    expect(view).toMatchObject({ stage: "freeze", phase: "blocked", licenseId: null });
     const license = store.getLicenseById(licenseId!)!;
     expect(license.invalidatedAt).toBeTruthy();
   });

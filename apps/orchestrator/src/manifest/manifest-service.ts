@@ -14,12 +14,14 @@
 import {
   buildManifest,
   hashRustTree,
+  SECURITY_CHECKS,
   sha256Manifest,
   type BuildReport,
   type MigrationManifest,
   type ParityReport,
   type RustTreeEntry,
   type SecurityReport,
+  type SourceTestEvidence,
 } from "@mh/shared";
 import type { Store } from "../store.js";
 
@@ -42,24 +44,27 @@ export function freezeManifest(store: Store, migrationId: string, at: string): F
   const build = store.getArtifact<BuildReport>(migrationId, "build");
   const parity = store.getArtifact<ParityReport>(migrationId, "parity");
   const security = store.getArtifact<SecurityReport>(migrationId, "security");
-  const sourceTests = store.getArtifact<{ discovered: number; representedAsFixtures: number }>(
-    migrationId,
-    "sourceTests",
-  );
+  const sourceTests = store.getArtifact<SourceTestEvidence>(migrationId, "sourceTests");
 
   if (!build) return { ok: false, reason: "cannot freeze: no build report" };
   if (!parity) return { ok: false, reason: "cannot freeze: no parity report" };
   if (!security) return { ok: false, reason: "cannot freeze: no security report" };
+  if (!sourceTests) return { ok: false, reason: "cannot freeze: no source test evidence" };
 
   const rustTree = currentRustTree(store, migrationId);
   if (rustTree.length === 0) return { ok: false, reason: "cannot freeze: build report lists no files" };
 
+  const passedSecurityChecks = new Set(
+    security.checks.filter((check) => check.status === "pass").map((check) => check.name),
+  );
   const securityPass =
-    security.newHighSeverity === 0 && security.checks.every((c) => c.status !== "fail");
+    security.newHighSeverity === 0 &&
+    security.checks.every((check) => check.status !== "fail") &&
+    SECURITY_CHECKS.every((name) => passedSecurityChecks.has(name));
 
   // The goldens ARE the record of externally observable .NET behaviour, so every
   // captured fixture is one .NET behaviour verified against Rust.
-  const dotnetVerified = sourceTests?.discovered ?? parity.total;
+  const dotnetVerified = sourceTests?.passed ?? 0;
 
   const manifest = buildManifest({
     migrationId,

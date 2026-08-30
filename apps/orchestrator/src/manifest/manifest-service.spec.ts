@@ -41,7 +41,23 @@ function seed(over: { rustTree?: Array<{ path: string; sha256: string }> } = {})
   store.putArtifact(
     MID,
     "security",
-    { migrationId: MID, checks: [{ name: "cargo-audit", status: "pass" }], newHighSeverity: 0 },
+    {
+      migrationId: MID,
+      checks: [
+        { name: "input-validation-parity", status: "pass" },
+        { name: "error-sanitization", status: "pass" },
+        { name: "secret-leakage", status: "pass" },
+        { name: "cargo-audit", status: "pass" },
+        { name: "sensitive-logging", status: "pass" },
+      ],
+      newHighSeverity: 0,
+    },
+    "t1",
+  );
+  store.putArtifact(
+    MID,
+    "sourceTests",
+    { discovered: 34, passed: 34, representedAsFixtures: 384 },
     "t1",
   );
 }
@@ -58,7 +74,7 @@ describe("freezeManifest", () => {
     expect(res.ok).toBe(true);
     const m = res.manifest!;
     expect(m.validation).toEqual({
-      dotnetTests: "384/384",
+      dotnetTests: "34/34",
       rustTests: "34/34",
       parity: "384/384",
       clippy: "PASS",
@@ -80,6 +96,27 @@ describe("freezeManifest", () => {
   it("refuses to freeze when the build lists no files", () => {
     seed({ rustTree: [] });
     expect(freezeManifest(store, MID, "t1")).toMatchObject({ ok: false, reason: /no files/ });
+  });
+
+  it("never records security PASS when a mandatory check is missing or skipped", () => {
+    seed();
+    store.putArtifact(
+      MID,
+      "security",
+      {
+        migrationId: MID,
+        checks: [
+          { name: "input-validation-parity", status: "pass" },
+          { name: "error-sanitization", status: "pass" },
+          { name: "secret-leakage", status: "pass" },
+          { name: "cargo-audit", status: "skip" },
+        ],
+        newHighSeverity: 0,
+      },
+      "t2",
+    );
+
+    expect(freezeManifest(store, MID, "t3").manifest?.validation.security).toBe("FAIL");
   });
 });
 

@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+const envBoolean = z.preprocess(
+  (value) => {
+    if (value === undefined) return false;
+    if (value === "true" || value === true) return true;
+    if (value === "false" || value === false) return false;
+    return value;
+  },
+  z.boolean(),
+);
+
 const schema = z.object({
   ORCH_PORT: z.coerce.number().int().positive().default(8080),
   ORCH_DB: z.string().default("./apps/orchestrator/data/mh.sqlite"),
@@ -7,6 +17,7 @@ const schema = z.object({
 
   TRUEFORGE_BASE_URL: z.string().url().default("http://localhost:8790"),
   TRUEFORGE_API_KEY: z.string().min(1).optional(),
+  MH_DEMO_MODE: envBoolean,
 
   // Defaults for a migration when the request omits them.
   MH_SOURCE_REPO: z.string().regex(/^[^/]+\/[^/]+$/).optional(),

@@ -13,6 +13,8 @@ interface Script {
   outcome?: StageResult["outcome"];
   /** If set, emit a tool.approval_required with this toolCallId and end as "waiting". */
   pauseForApproval?: string;
+  /** Successive write approvals emitted across runStage + reply turns. */
+  approvalSequence?: Array<{ id: string; name: string }>;
   /** Workspace files this turn "wrote", resolved by `downloadArtifact` for its session. */
   artifacts?: Record<string, string>;
 }
@@ -29,6 +31,7 @@ export class FakeGateway implements AgentGateway {
   private readonly scripts = new Map<string, Script>();
   private readonly queues = new Map<string, Script[]>();
   private readonly artifactsBySession = new Map<string, Record<string, string>>();
+  private readonly approvalsBySession = new Map<string, Array<{ id: string; name: string }>>();
   artifacts: Record<string, string> = {};
 
   script(agentName: string, script: Script): this {
@@ -66,7 +69,14 @@ export class FakeGateway implements AgentGateway {
       });
     }
 
-    if (script.pauseForApproval) {
+    const approvals = script.approvalSequence
+      ? [...script.approvalSequence]
+      : script.pauseForApproval
+        ? [{ id: script.pauseForApproval, name: "create_pull_request" }]
+        : [];
+    const approval = approvals.shift();
+    if (approval) {
+      this.approvalsBySession.set(sessionId, approvals);
       await this.emit(params.onEvent, {
         type: "tool.approval_required",
         tfSeq: ++this.seq,
@@ -74,7 +84,7 @@ export class FakeGateway implements AgentGateway {
         raw: {
           type: "tool.approval_required",
           threadId: "main",
-          toolCalls: [{ id: script.pauseForApproval, name: "create_pull_request" }],
+          toolCalls: [approval],
         },
       });
       return { sessionId, turnId, lastSeq: this.seq, outcome: "waiting" };
@@ -108,6 +118,27 @@ export class FakeGateway implements AgentGateway {
       threadId: "main",
       raw: { type: "tool.response", content: "ok" },
     });
+    const approvals = this.approvalsBySession.get(params.sessionId) ?? [];
+    const approval = approvals.shift();
+    if (approval) {
+      this.approvalsBySession.set(params.sessionId, approvals);
+      await this.emit(params.onEvent, {
+        type: "tool.approval_required",
+        tfSeq: ++this.seq,
+        threadId: "main",
+        raw: {
+          type: "tool.approval_required",
+          threadId: "main",
+          toolCalls: [approval],
+        },
+      });
+      return {
+        sessionId: params.sessionId,
+        turnId: params.turnId,
+        lastSeq: this.seq,
+        outcome: "waiting",
+      };
+    }
     await this.emit(params.onEvent, {
       type: "turn.done",
       tfSeq: ++this.seq,

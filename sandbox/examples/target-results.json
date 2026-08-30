@@ -1,0 +1,22 @@
+[
+  {
+    "fixtureId": "health",
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "status": "healthy"
+    }
+  },
+  {
+    "fixtureId": "rounding",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "amount": 1.00
+    }
+  }
+]

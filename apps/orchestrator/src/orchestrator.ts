@@ -1,16 +1,23 @@
 import {
   advance,
   canCutover,
+  clearLicense,
   evaluateGates,
   initialState,
   isTerminal,
   readyToFreeze,
+  redirect as redirectState,
   STAGE_AGENT,
   type GateInputs,
   type GateResult,
+  type Architecture,
+  type BuildReport,
+  type MigrationContract,
   type MigrationLicense,
   type MigrationManifest,
   type MigrationStage,
+  type ParityReport,
+  type SecurityReport,
   type StageOutcome,
 } from "@mh/shared";
 import type { ServerResponse } from "node:http";
@@ -18,7 +25,7 @@ import type { AgentGateway, StageEvent } from "./trueforge.js";
 import { freezeManifest, currentRustTree, reverifyManifest } from "./manifest/manifest-service.js";
 import { routeApproval } from "./safety/approval-router.js";
 import { LicenseService } from "./safety/licenses.js";
-import { Store } from "./store.js";
+import { Store, type StageRunRow } from "./store.js";
 import { SseHub } from "./sse.js";
 import { buildRepairInput } from "./stages/repair-input.js";
 
@@ -45,6 +52,8 @@ export interface StartMigrationInput {
   targetRepo?: string | undefined;
   targetBranch?: string | undefined;
 }
+
+export type RetryStage = "discover" | "contract" | "migrate" | "parity" | "security";
 
 /**
  * Maps a finished stage to a state-machine outcome. Stage-specific artifact
@@ -88,8 +97,6 @@ export class Orchestrator {
   private readonly defaults: NonNullable<OrchestratorDeps["defaults"]>;
   private readonly licenses: LicenseService;
   private resolver: StageResolver = DEFAULT_RESOLVER;
-  /** Per-migration relay sequence for the SSE stream. */
-  private readonly seqByMigration = new Map<string, number>();
   /** In-flight stage tasks, so tests (and shutdown) can await them. */
   private readonly inFlight = new Set<Promise<unknown>>();
   private stopped = false;
@@ -137,6 +144,58 @@ export class Orchestrator {
     return { migrationId: id };
   }
 
+  list(): MigrationSummary[] {
+    return this.store.listMigrations().map((migration) => ({
+      migrationId: migration.id,
+      source: {
+        repo: migration.sourceRepo,
+        commit: migration.sourceCommit,
+        path: migration.sourcePath,
+      },
+      target: { repo: migration.targetRepo, branch: migration.targetBranch },
+      stage: migration.stage,
+      phase: migration.phase,
+      repairRounds: migration.repairRounds,
+      terminal: ["complete", "halted", "denied", "failed"].includes(migration.phase),
+      createdAt: migration.createdAt,
+      updatedAt: migration.updatedAt,
+    }));
+  }
+
+  /** Resume agent turns that were running when the orchestrator process stopped. */
+  async resumeIncomplete(): Promise<void> {
+    for (const migration of this.store.listMigrations()) {
+      const state = this.store.loadState(migration.id);
+      if (!state || isTerminal(state) || state.phase !== "running") continue;
+      if (!STAGE_AGENT[state.stage]) continue;
+
+      const run = [...this.store.stageRuns(migration.id)]
+        .reverse()
+        .find((candidate) => candidate.stage === state.stage);
+
+      // Waiting turns are intentionally parked until their persisted interaction
+      // is answered. A completed run can be re-resolved without rerunning the agent.
+      if (run?.status === "waiting") {
+        if (state.stage === "cutover") this.routeCutoverApprovals(migration.id);
+        continue;
+      }
+      if (run?.status === "done" && run.sessionId) {
+        const task = this.resolvePersistedRun(migration.id, run);
+        this.track(task);
+        continue;
+      }
+      if (run?.status === "running" && run.sessionId && run.turnId) {
+        const task = this.resumeRun(migration.id, run);
+        this.track(task);
+        continue;
+      }
+
+      // No resumable cursor was persisted. Starting the stage again is safer than
+      // inventing an outcome; stage artifacts remain authoritative and validated.
+      this.schedule(migration.id, state.stage);
+    }
+  }
+
   view(migrationId: string): MigrationView | null {
     const m = this.store.getMigration(migrationId);
     if (!m) return null;
@@ -159,6 +218,16 @@ export class Orchestrator {
       authority: authorityPanel(state.stage, this.store.getLicense(migrationId)),
       pendingInteractions: this.store.openInteractions(migrationId),
       history: state.history,
+      evidence: {
+        architecture: this.store.getArtifact<Architecture>(migrationId, "architecture"),
+        contract: this.store.getArtifact<MigrationContract>(migrationId, "contract"),
+        build: this.store.getArtifact<BuildReport>(migrationId, "build"),
+        parity: this.store.getArtifact<ParityReport>(migrationId, "parity"),
+        parityDiagnosis: this.store.getArtifact(migrationId, "parityDiagnosis"),
+        security: this.store.getArtifact<SecurityReport>(migrationId, "security"),
+        manifest: this.store.getArtifact<MigrationManifest>(migrationId, "manifest"),
+        cutover: this.store.getArtifact(migrationId, "cutover"),
+      },
     };
   }
 
@@ -176,6 +245,7 @@ export class Orchestrator {
    * feeding the decision back into the same session and continuing to consume.
    */
   answerInteraction(
+    migrationId: string,
     eventId: string,
     answer:
       | { kind: "approval"; status: "allow" }
@@ -184,6 +254,9 @@ export class Orchestrator {
   ): { ok: boolean; reason?: string } {
     const pending = this.store.pendingInteraction(eventId);
     if (!pending) return { ok: false, reason: "no such pending interaction" };
+    if (pending.migrationId !== migrationId) {
+      return { ok: false, reason: "interaction does not belong to this migration" };
+    }
     if (pending.resolvedAt) return { ok: false, reason: "already answered" };
 
     const toolCalls = (pending.payload as { toolCalls?: Array<{ id?: string }> }).toolCalls ?? [];
@@ -209,7 +282,6 @@ export class Orchestrator {
             content: answer.content,
           };
 
-    const migrationId = pending.migrationId;
     const run = this.store.stageRuns(migrationId).find((r) => r.sessionId === pending.sessionId);
     const task = this.gateway
       .reply({
@@ -217,8 +289,13 @@ export class Orchestrator {
         turnId: run?.turnId ?? null,
         item,
         onEvent: async (e) => {
-          const seq = this.store.appendEvent(migrationId, pending.sessionId, e.tfSeq, e.type, e.raw, this.clock());
-          this.relay(migrationId, `tf.${e.type}`, { event: e.raw }, seq);
+          this.recordStageEvent(
+            migrationId,
+            run?.stage ?? this.store.loadState(migrationId)?.stage ?? "cutover",
+            run?.id ?? null,
+            pending.sessionId,
+            e,
+          );
         },
       })
       .then((result) => {
@@ -228,6 +305,9 @@ export class Orchestrator {
             lastSeq: result.lastSeq,
             ...(result.outcome === "waiting" ? {} : { finishedAt: this.clock() }),
           });
+        }
+        if (result.outcome === "waiting" && run?.stage === "cutover") {
+          this.routeCutoverApprovals(migrationId);
         }
         if (result.outcome === "completed" && run) {
           return this.resolver({
@@ -248,8 +328,7 @@ export class Orchestrator {
           detail: err instanceof Error ? err.message : String(err),
         });
       });
-    this.inFlight.add(task);
-    void task.finally(() => this.inFlight.delete(task));
+    this.track(task);
     return { ok: true };
   }
 
@@ -315,6 +394,26 @@ export class Orchestrator {
     return { ok: true, licenseId: license.licenseId };
   }
 
+  retryBlocked(
+    migrationId: string,
+    stage: RetryStage,
+  ): { ok: boolean; reason?: string } {
+    const at = this.clock();
+    const state = this.store.loadState(migrationId);
+    if (!state) return { ok: false, reason: "no such migration" };
+    if (state.phase !== "blocked") {
+      return { ok: false, reason: `migration is not blocked (phase: ${state.phase})` };
+    }
+
+    const result = redirectState(state, stage, at);
+    if (!result.ok) return { ok: false, reason: result.reason ?? "redirect failed" };
+    this.store.saveState(migrationId, result.state, at);
+    this.relay(migrationId, "migration.retried", { stage });
+    this.relay(migrationId, "state", this.snapshot(migrationId));
+    this.schedule(migrationId, stage);
+    return { ok: true };
+  }
+
   /** Orchestrator-run gate + freeze step (gates 1-8). PR#8 fills in the manifest freeze. */
   evaluateAndMaybeFreeze(migrationId: string): { ok: boolean; readyToFreeze: boolean; reason?: string } {
     const at = this.clock();
@@ -362,8 +461,7 @@ export class Orchestrator {
         this.relay(migrationId, "state", this.snapshot(migrationId));
       }
     });
-    this.inFlight.add(task);
-    void task.finally(() => this.inFlight.delete(task));
+    this.track(task);
   }
 
   private async runStage(migrationId: string, stage: MigrationStage): Promise<void> {
@@ -380,26 +478,7 @@ export class Orchestrator {
     let sessionId = "";
 
     const onEvent = async (e: StageEvent): Promise<void> => {
-      const seq = this.store.appendEvent(migrationId, sessionId || null, e.tfSeq, e.type, e.raw, this.clock());
-      this.store.updateStageRun(runId, e.tfSeq != null ? { lastSeq: e.tfSeq } : {});
-      this.relay(migrationId, `tf.${e.type}`, { stage, event: e.raw }, seq);
-
-      if (e.type === "tool.approval_required" || e.type === "tool.response_required") {
-        const kind = e.type === "tool.approval_required" ? "approval" : "question";
-        const toolCalls = (e.raw as { toolCalls?: Array<{ id?: string; name?: string }> }).toolCalls ?? [];
-        const eventId = `${migrationId}:${e.tfSeq ?? seq}`;
-        this.store.putPendingInteraction({
-          eventId,
-          migrationId,
-          sessionId,
-          threadId: e.threadId ?? "main",
-          kind,
-          payload: { stage, toolCalls },
-          at: this.clock(),
-        });
-        this.store.updateStageRun(runId, { status: "waiting" });
-        this.relay(migrationId, "interaction.required", { eventId, kind, stage, toolCalls });
-      }
+      this.recordStageEvent(migrationId, stage, runId, sessionId || null, e);
     };
 
     const result = await this.gateway.runStage({
@@ -471,11 +550,25 @@ export class Orchestrator {
       const decision = routeApproval({ toolCalls }, { license, manifest, currentRustTree: tree });
 
       if (decision.action === "allow") {
+        if (decision.toolName === "create_pull_request") {
+          const approvedAt = this.clock();
+          this.store.putArtifact(
+            migrationId,
+            "cutover",
+            {
+              status: "approved",
+              tool: decision.toolName,
+              toolCallId: decision.toolCallId,
+              approvedAt,
+            },
+            approvedAt,
+          );
+        }
         this.relay(migrationId, "license.exercised", {
           licenseId: license?.licenseId ?? null,
           tool: decision.toolName,
         });
-        this.answerInteraction(interaction.eventId, { kind: "approval", status: "allow" });
+        this.answerInteraction(migrationId, interaction.eventId, { kind: "approval", status: "allow" });
         continue;
       }
 
@@ -486,11 +579,18 @@ export class Orchestrator {
 
       // park — no usable license, or the Rust tree drifted after approval.
       if (license && /TOCTOU|changed after|integrity/i.test(decision.reason)) {
-        this.licenses.invalidate(license.licenseId, this.clock(), decision.reason);
+        const invalidatedAt = this.clock();
+        this.licenses.invalidate(license.licenseId, invalidatedAt, decision.reason);
+        this.store.resolvePendingInteraction(interaction.eventId, invalidatedAt);
+        const current = this.store.loadState(migrationId);
+        if (current) {
+          this.store.saveState(migrationId, clearLicense(current, invalidatedAt), invalidatedAt);
+        }
         this.relay(migrationId, "license.invalidated", {
           licenseId: license.licenseId,
           reason: decision.reason,
         });
+        this.relay(migrationId, "state", this.snapshot(migrationId));
       }
       this.relay(migrationId, "license.required", { reason: decision.reason, eventId: interaction.eventId });
     }
@@ -563,18 +663,107 @@ export class Orchestrator {
 
   private relay(migrationId: string, event: string, data: unknown, seq?: number): void {
     if (this.stopped) return;
+    const persistedSeq =
+      seq ?? this.store.appendEvent(migrationId, null, null, event, data, this.clock());
     try {
-      const s = seq ?? this.bumpSeq(migrationId);
-      this.sse.broadcast(migrationId, { seq: s, event, data });
+      this.sse.broadcast(migrationId, { seq: persistedSeq, event, data });
     } catch {
       /* a broken SSE client or a race with shutdown must not crash a stage */
     }
   }
 
-  private bumpSeq(migrationId: string): number {
-    const next = (this.seqByMigration.get(migrationId) ?? 0) + 1;
-    this.seqByMigration.set(migrationId, next);
-    return next;
+  private track(task: Promise<unknown>): void {
+    this.inFlight.add(task);
+    void task.finally(() => this.inFlight.delete(task));
+  }
+
+  private recordStageEvent(
+    migrationId: string,
+    stage: MigrationStage,
+    runId: number | null,
+    sessionId: string | null,
+    event: StageEvent,
+  ): void {
+    const seq = this.store.appendEvent(
+      migrationId,
+      sessionId,
+      event.tfSeq,
+      event.type,
+      event.raw,
+      this.clock(),
+    );
+    if (runId != null && event.tfSeq != null) {
+      this.store.updateStageRun(runId, { lastSeq: event.tfSeq });
+    }
+    this.relay(migrationId, `tf.${event.type}`, { stage, event: event.raw }, seq);
+
+    if (event.type !== "tool.approval_required" && event.type !== "tool.response_required") return;
+
+    const kind = event.type === "tool.approval_required" ? "approval" : "question";
+    const toolCalls =
+      (event.raw as { toolCalls?: Array<{ id?: string; name?: string }> }).toolCalls ?? [];
+    const eventId = `${migrationId}:${event.tfSeq ?? seq}`;
+    this.store.putPendingInteraction({
+      eventId,
+      migrationId,
+      sessionId: sessionId ?? "",
+      threadId: event.threadId ?? "main",
+      kind,
+      payload: { stage, toolCalls },
+      at: this.clock(),
+    });
+    if (runId != null) this.store.updateStageRun(runId, { status: "waiting" });
+    this.relay(migrationId, "interaction.required", { eventId, kind, stage, toolCalls });
+  }
+
+  private async resolvePersistedRun(migrationId: string, run: StageRunRow): Promise<void> {
+    const outcome = await this.resolver({
+      stage: run.stage,
+      gateway: this.gateway,
+      store: this.store,
+      migrationId,
+      sessionId: run.sessionId!,
+      turnId: run.turnId,
+      at: this.clock(),
+    });
+    this.applyOutcome(migrationId, outcome);
+  }
+
+  private async resumeRun(migrationId: string, run: StageRunRow): Promise<void> {
+    const result = await this.gateway.resume({
+      sessionId: run.sessionId!,
+      turnId: run.turnId!,
+      afterSequenceNumber: run.lastSeq,
+      onEvent: async (event) => {
+        this.recordStageEvent(migrationId, run.stage, run.id, run.sessionId, event);
+      },
+    });
+
+    if (result.outcome === "waiting") {
+      this.store.updateStageRun(run.id, { status: "waiting", lastSeq: result.lastSeq });
+      if (run.stage === "cutover") this.routeCutoverApprovals(migrationId);
+      return;
+    }
+    if (result.outcome === "error" || result.outcome === "cancelled") {
+      this.store.updateStageRun(run.id, {
+        status: "error",
+        detail: result.errorDetail ?? result.outcome,
+        finishedAt: this.clock(),
+      });
+      const state = this.store.loadState(migrationId);
+      if (state && !isTerminal(state)) {
+        this.store.saveState(migrationId, { ...state, phase: "failed" }, this.clock());
+        this.relay(migrationId, "state", this.snapshot(migrationId));
+      }
+      return;
+    }
+
+    this.store.updateStageRun(run.id, {
+      status: "done",
+      lastSeq: result.lastSeq,
+      finishedAt: this.clock(),
+    });
+    await this.resolvePersistedRun(migrationId, { ...run, turnId: result.turnId });
   }
 
   private nextMigrationId(): string {
@@ -599,6 +788,28 @@ export interface MigrationView {
   authority: AuthorityPanel;
   pendingInteractions: ReturnType<Store["openInteractions"]>;
   history: unknown[];
+  evidence: {
+    architecture: Architecture | null;
+    contract: MigrationContract | null;
+    build: BuildReport | null;
+    parity: ParityReport | null;
+    parityDiagnosis: unknown | null;
+    security: SecurityReport | null;
+    manifest: MigrationManifest | null;
+    cutover: unknown | null;
+  };
+}
+
+export interface MigrationSummary {
+  migrationId: string;
+  source: { repo: string; commit: string; path: string };
+  target: { repo: string; branch: string };
+  stage: MigrationStage;
+  phase: string;
+  repairRounds: number;
+  terminal: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AuthorityPanel {

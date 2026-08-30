@@ -184,7 +184,7 @@ export interface GreenInputs {
   build: BuildReport;
   parity: ParityReport;
   security: SecurityReport;
-  sourceTests: { discovered: number; representedAsFixtures: number };
+  sourceTests: { discovered: number; passed: number; representedAsFixtures: number };
   manifest: MigrationManifest;
   license: MigrationLicense;
 }
@@ -198,7 +198,7 @@ export function greenInputs(): GreenInputs {
     build: build(),
     parity: parity(),
     security: security(),
-    sourceTests: { discovered: 34, representedAsFixtures: 220 },
+    sourceTests: { discovered: 34, passed: 34, representedAsFixtures: 220 },
     manifest: m,
     license: license(m),
   };

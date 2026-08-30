@@ -190,9 +190,20 @@ describe("canCutover is blocked by any red gate", () => {
   it("blocks when fewer xUnit cases are represented as fixtures than were discovered", () => {
     const gates = evaluateGates({
       ...greenInputs(),
-      sourceTests: { discovered: 34, representedAsFixtures: 30 },
+      sourceTests: { discovered: 34, passed: 34, representedAsFixtures: 30 },
     });
     expect(gates.find((g) => g.id === "source-tests-preserved")?.status).toBe("fail");
+    expect(canCutover(gates)).toBe(false);
+  });
+
+  it("blocks when the source xUnit suite did not pass in full", () => {
+    const gates = evaluateGates({
+      ...greenInputs(),
+      sourceTests: { discovered: 34, passed: 33, representedAsFixtures: 220 },
+    });
+    const sourceGate = gates.find((g) => g.id === "source-tests-preserved");
+    expect(sourceGate?.status).toBe("fail");
+    expect(sourceGate?.detail).toMatch(/33\/34/);
     expect(canCutover(gates)).toBe(false);
   });
 

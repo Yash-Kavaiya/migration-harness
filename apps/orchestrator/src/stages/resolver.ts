@@ -152,11 +152,28 @@ export function makeStageResolver(opts: StageResolverOptions = {}): StageResolve
         // are represented as goldens. Feeds gate 4 (source-tests-preserved).
         const plan = await downloadJson(gateway, session, "fixture-plan.json");
         if (!isParseFailure(plan) && plan && typeof plan === "object") {
-          const p = plan as { fixtures?: unknown; dotnetTestCases?: unknown };
-          const fixtures = Number(p.fixtures);
+          const p = plan as {
+            fixtures?: unknown;
+            dotnetTestCases?: unknown;
+            dotnetTestsPassed?: unknown;
+          };
+          const fixtures = Array.isArray(p.fixtures) ? p.fixtures.length : Number(p.fixtures);
           const cases = Number(p.dotnetTestCases);
-          if (Number.isFinite(fixtures) && Number.isFinite(cases)) {
-            store.putArtifact(migrationId, "sourceTests", { discovered: cases, representedAsFixtures: fixtures }, at);
+          const passed = Number(p.dotnetTestsPassed);
+          if (
+            Number.isInteger(fixtures) &&
+            fixtures >= 0 &&
+            Number.isInteger(cases) &&
+            cases >= 0 &&
+            Number.isInteger(passed) &&
+            passed >= 0
+          ) {
+            store.putArtifact(
+              migrationId,
+              "sourceTests",
+              { discovered: cases, passed, representedAsFixtures: fixtures },
+              at,
+            );
           }
         }
         return "ok";
@@ -221,8 +238,24 @@ export function makeStageResolver(opts: StageResolverOptions = {}): StageResolve
         return "build-failed";
       }
 
-      case "cutover":
+      case "cutover": {
+        const evidence = store.getArtifact<{
+          status?: string;
+          tool?: string;
+          toolCallId?: string;
+        }>(migrationId, "cutover");
+        if (
+          evidence?.status !== "approved" ||
+          evidence.tool !== "create_pull_request" ||
+          !evidence.toolCallId
+        ) {
+          throw new StageArtifactError(
+            "cutover",
+            "turn completed without an approved create_pull_request call",
+          );
+        }
         return "cutover-done";
+      }
 
       default:
         return "ok";

@@ -22,9 +22,14 @@ const answerBody = z.union([
   z.object({ kind: z.literal("question"), content: z.string() }),
 ]);
 
+const retryBody = z.object({
+  stage: z.enum(["discover", "contract", "migrate", "parity", "security"]),
+});
+
 export interface ServerDeps {
   orchestrator: Orchestrator;
   webOrigin: string;
+  mode?: "live" | "demo";
 }
 
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
@@ -33,13 +38,15 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   const { orchestrator } = deps;
 
-  app.get("/health", () => ({ status: "ok" }));
+  app.get("/health", () => ({ status: "ok", mode: deps.mode ?? "live" }));
 
   app.post("/api/migrations", (req, reply) => {
     const parsed = startBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     return orchestrator.start(parsed.data);
   });
+
+  app.get("/api/migrations", () => ({ migrations: orchestrator.list() }));
 
   app.get("/api/migrations/:id", (req, reply) => {
     const { id } = req.params as { id: string };
@@ -72,16 +79,24 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
 
   app.post("/api/migrations/:id/interaction/:eventId", (req, reply) => {
-    const { eventId } = req.params as { eventId: string };
+    const { id, eventId } = req.params as { id: string; eventId: string };
     const parsed = answerBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const result = orchestrator.answerInteraction(eventId, parsed.data);
+    const result = orchestrator.answerInteraction(id, eventId, parsed.data);
     return result.ok ? { ok: true } : reply.code(409).send(result);
   });
 
   app.post("/api/migrations/:id/freeze", (req, reply) => {
     const { id } = req.params as { id: string };
     const result = orchestrator.evaluateAndMaybeFreeze(id);
+    return result.ok ? result : reply.code(409).send(result);
+  });
+
+  app.post("/api/migrations/:id/retry", (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = retryBody.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const result = orchestrator.retryBlocked(id, parsed.data.stage);
     return result.ok ? result : reply.code(409).send(result);
   });
 

@@ -36,10 +36,16 @@ export interface GateInputs {
   build?: BuildReport | null;
   parity?: ParityReport | null;
   security?: SecurityReport | null;
-  /** Number of xUnit test cases discovered vs. represented as fixtures. */
-  sourceTests?: { discovered: number; representedAsFixtures: number } | null;
+  /** xUnit execution evidence plus the number represented as parity fixtures. */
+  sourceTests?: SourceTestEvidence | null;
   manifest?: MigrationManifest | null;
   license?: MigrationLicense | null;
+}
+
+export interface SourceTestEvidence {
+  discovered: number;
+  passed: number;
+  representedAsFixtures: number;
 }
 
 /** The five checks a security report must carry, all passing, for gate 8. */
@@ -101,13 +107,14 @@ export function evaluateGates(inp: GateInputs): GateResult[] {
   else {
     const ok =
       inp.sourceTests.discovered > 0 &&
+      inp.sourceTests.passed === inp.sourceTests.discovered &&
       inp.sourceTests.representedAsFixtures >= inp.sourceTests.discovered;
     results.push(
       gate(
         "source-tests-preserved",
         4,
         ok ? "pass" : "fail",
-        `${inp.sourceTests.representedAsFixtures}/${inp.sourceTests.discovered} xUnit cases covered by fixtures`,
+        `source tests ${inp.sourceTests.passed}/${inp.sourceTests.discovered}; fixtures ${inp.sourceTests.representedAsFixtures}/${inp.sourceTests.discovered}`,
       ),
     );
   }

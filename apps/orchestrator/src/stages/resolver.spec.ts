@@ -171,3 +171,19 @@ describe("repair resolver", () => {
     expect(await run("repair", "repair-log.json", { note: "changed pricing.rs" })).toBe("build-failed");
   });
 });
+
+describe("cutover resolver", () => {
+  it("fails closed when the turn completes without an approved create_pull_request call", async () => {
+    await expect(run("cutover", "unused.json", {})).rejects.toThrow(/create_pull_request/i);
+  });
+
+  it("completes only after the licensed create_pull_request approval was exercised", async () => {
+    store.putArtifact(
+      MID,
+      "cutover",
+      { status: "approved", tool: "create_pull_request", toolCallId: "tc-pr-1", approvedAt: "t1" },
+      "t1",
+    );
+    expect(await run("cutover", "unused.json", {})).toBe("cutover-done");
+  });
+});
