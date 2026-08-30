@@ -1,0 +1,181 @@
+import type {
+  AgentGateway,
+  ReplyParams,
+  ResumeParams,
+  RunStageParams,
+  StageEvent,
+  StageResult,
+} from "../trueforge.js";
+
+interface Script {
+  /** Events to emit before the result. */
+  events?: Array<{ type: string; tfSeq?: number; threadId?: string | null; raw?: Record<string, unknown> }>;
+  outcome?: StageResult["outcome"];
+  /** If set, emit a tool.approval_required with this toolCallId and end as "waiting". */
+  pauseForApproval?: string;
+  /** Successive write approvals emitted across runStage + reply turns. */
+  approvalSequence?: Array<{ id: string; name: string }>;
+  /** Workspace files this turn "wrote", resolved by `downloadArtifact` for its session. */
+  artifacts?: Record<string, string>;
+}
+
+/**
+ * A scripted stand-in for TrueForge. Each agent name maps to a Script (or a queue
+ * of them, one consumed per `runStage` call); `reply` continues from wherever
+ * `runStage` paused. Deterministic — no real I/O.
+ */
+export class FakeGateway implements AgentGateway {
+  readonly calls: Array<{ method: string; agentName?: string; input?: string }> = [];
+  private seq = 0;
+  private sessionSeq = 0;
+  private readonly scripts = new Map<string, Script>();
+  private readonly queues = new Map<string, Script[]>();
+  private readonly artifactsBySession = new Map<string, Record<string, string>>();
+  private readonly approvalsBySession = new Map<string, Array<{ id: string; name: string }>>();
+  artifacts: Record<string, string> = {};
+
+  script(agentName: string, script: Script): this {
+    this.scripts.set(agentName, script);
+    return this;
+  }
+
+  /** Successive `runStage` calls for this agent consume these scripts in order; the last repeats. */
+  scriptEach(agentName: string, scripts: Script[]): this {
+    this.queues.set(agentName, [...scripts]);
+    return this;
+  }
+
+  async runStage(params: RunStageParams): Promise<StageResult> {
+    this.calls.push({ method: "runStage", agentName: params.agentName, input: params.input });
+    const sessionId = `sess-${++this.sessionSeq}`;
+    const turnId = `turn-${this.sessionSeq}`;
+    const script = this.nextScript(params.agentName);
+    if (script.artifacts) this.artifactsBySession.set(sessionId, script.artifacts);
+    params.onStart?.({ sessionId });
+
+    await this.emit(params.onEvent, {
+      type: "turn.created",
+      tfSeq: ++this.seq,
+      threadId: null,
+      raw: { type: "turn.created", turnId, state: { status: "running" } },
+    });
+
+    for (const e of script.events ?? []) {
+      await this.emit(params.onEvent, {
+        type: e.type,
+        tfSeq: ++this.seq,
+        threadId: e.threadId ?? null,
+        raw: e.raw ?? { type: e.type },
+      });
+    }
+
+    const approvals = script.approvalSequence
+      ? [...script.approvalSequence]
+      : script.pauseForApproval
+        ? [{ id: script.pauseForApproval, name: "create_pull_request" }]
+        : [];
+    const approval = approvals.shift();
+    if (approval) {
+      this.approvalsBySession.set(sessionId, approvals);
+      await this.emit(params.onEvent, {
+        type: "tool.approval_required",
+        tfSeq: ++this.seq,
+        threadId: "main",
+        raw: {
+          type: "tool.approval_required",
+          threadId: "main",
+          toolCalls: [approval],
+        },
+      });
+      return { sessionId, turnId, lastSeq: this.seq, outcome: "waiting" };
+    }
+
+    await this.emit(params.onEvent, {
+      type: "turn.done",
+      tfSeq: ++this.seq,
+      threadId: null,
+      raw: { type: "turn.done", state: { status: "done" } },
+    });
+    return { sessionId, turnId, lastSeq: this.seq, outcome: script.outcome ?? "completed" };
+  }
+
+  async resume(params: ResumeParams): Promise<StageResult> {
+    this.calls.push({ method: "resume" });
+    await this.emit(params.onEvent, {
+      type: "turn.done",
+      tfSeq: ++this.seq,
+      threadId: null,
+      raw: { type: "turn.done", state: { status: "done" } },
+    });
+    return { sessionId: params.sessionId, turnId: params.turnId, lastSeq: this.seq, outcome: "completed" };
+  }
+
+  async reply(params: ReplyParams): Promise<StageResult> {
+    this.calls.push({ method: "reply" });
+    await this.emit(params.onEvent, {
+      type: "tool.response",
+      tfSeq: ++this.seq,
+      threadId: "main",
+      raw: { type: "tool.response", content: "ok" },
+    });
+    const approvals = this.approvalsBySession.get(params.sessionId) ?? [];
+    const approval = approvals.shift();
+    if (approval) {
+      this.approvalsBySession.set(params.sessionId, approvals);
+      await this.emit(params.onEvent, {
+        type: "tool.approval_required",
+        tfSeq: ++this.seq,
+        threadId: "main",
+        raw: {
+          type: "tool.approval_required",
+          threadId: "main",
+          toolCalls: [approval],
+        },
+      });
+      return {
+        sessionId: params.sessionId,
+        turnId: params.turnId,
+        lastSeq: this.seq,
+        outcome: "waiting",
+      };
+    }
+    await this.emit(params.onEvent, {
+      type: "turn.done",
+      tfSeq: ++this.seq,
+      threadId: null,
+      raw: { type: "turn.done", state: { status: "done" } },
+    });
+    return {
+      sessionId: params.sessionId,
+      turnId: params.turnId,
+      lastSeq: this.seq,
+      outcome: "completed",
+    };
+  }
+
+  async downloadArtifact(params: { sessionId: string; turnId: string; path: string }): Promise<string> {
+    this.calls.push({ method: "downloadArtifact", input: params.path });
+    return this.artifactsBySession.get(params.sessionId)?.[params.path] ?? this.artifacts[params.path] ?? "{}";
+  }
+
+  private nextScript(agentName: string): Script {
+    const queue = this.queues.get(agentName);
+    if (queue && queue.length > 0) {
+      return queue.length === 1 ? queue[0]! : queue.shift()!;
+    }
+    return this.scripts.get(agentName) ?? {};
+  }
+
+  private async emit(
+    onEvent: RunStageParams["onEvent"],
+    e: { type: string; tfSeq: number; threadId: string | null; raw: Record<string, unknown> },
+  ): Promise<void> {
+    const event: StageEvent = {
+      tfSeq: e.tfSeq,
+      type: e.type,
+      threadId: e.threadId,
+      raw: e.raw as StageEvent["raw"],
+    };
+    await onEvent(event);
+  }
+}

@@ -90,9 +90,21 @@ export const parityReportSchema = z.object({
   total: z.number().int().min(0),
   passed: z.number().int().min(0),
   failed: z.number().int().min(0),
+  byRoute: z.array(
+    z.object({
+      method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+      route: z.string().startsWith("/"),
+      passed: z.number().int().min(0),
+      total: z.number().int().min(0),
+    }),
+  ),
   mismatches: z.array(
     z.object({
       fixtureId: z.string().regex(/^fx-\d{4}$/),
+      endpoint: z.object({
+        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+        route: z.string().startsWith("/"),
+      }),
       input: z.unknown(),
       dotnet: z.unknown(),
       rust: z.unknown(),

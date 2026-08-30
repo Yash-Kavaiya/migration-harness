@@ -1,0 +1,16 @@
+{
+  "name": "mh-migrator",
+  "instructionsFile": "mh-migrator.md",
+  "manifest": {
+    "model": { "name": "anthropic/claude-sonnet-4-6", "params": { "temperature": 0.1, "maxTokens": 16384 } },
+    "mcpServers": [],
+    "skills": [{ "name": "dotnet-to-rust" }, { "name": "rust-axum" }],
+    "config": {
+      "sandbox": { "enabled": true },
+      "askUserQuestions": { "enabled": false },
+      "dynamicSubAgents": { "enabled": false },
+      "generativeUi": { "enabled": false },
+      "iterationLimit": 150
+    }
+  }
+}

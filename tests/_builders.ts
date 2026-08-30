@@ -73,12 +73,19 @@ export function contract(overrides: Partial<MigrationContract> = {}): MigrationC
   });
 }
 
+/** byRoute tally covering the two routes in `contract()`, all passing. */
+const CLEAN_BY_ROUTE = [
+  { method: "GET" as const, route: "/health", passed: 20, total: 20 },
+  { method: "POST" as const, route: "/quote", passed: 200, total: 200 },
+];
+
 export function parity(overrides: Partial<ParityReport> = {}): ParityReport {
   return parityReportSchema.parse({
     migrationId: MIGRATION_ID,
     total: 220,
     passed: 220,
     failed: 0,
+    byRoute: CLEAN_BY_ROUTE,
     mismatches: [],
     ...overrides,
   });
@@ -88,13 +95,23 @@ export function parity(overrides: Partial<ParityReport> = {}): ParityReport {
 export function parityWithMismatches(n: number): ParityReport {
   const mismatches = Array.from({ length: n }, (_, i) => ({
     fixtureId: `fx-${String(i + 1).padStart(4, "0")}`,
-    input: { method: "POST", route: "/quote", body: { subtotal: 170.005 } },
+    endpoint: { method: "POST" as const, route: "/quote" },
+    input: { body: { subtotal: 170.005 } },
     dotnet: { total: "170.00" },
     rust: { total: "169.99" },
     diff: [{ path: "total", expected: "170.00", actual: "169.99" }],
     hypothesis: "monetary rounding: .NET banker's rounding vs Rust half-up",
   }));
-  return parity({ total: 220, passed: 220 - n, failed: n, mismatches });
+  return parity({
+    total: 220,
+    passed: 220 - n,
+    failed: n,
+    byRoute: [
+      { method: "GET", route: "/health", passed: 20, total: 20 },
+      { method: "POST", route: "/quote", passed: 200 - n, total: 200 },
+    ],
+    mismatches,
+  });
 }
 
 export function security(overrides: Partial<SecurityReport> = {}): SecurityReport {
@@ -167,7 +184,7 @@ export interface GreenInputs {
   build: BuildReport;
   parity: ParityReport;
   security: SecurityReport;
-  sourceTests: { discovered: number; representedAsFixtures: number };
+  sourceTests: { discovered: number; passed: number; representedAsFixtures: number };
   manifest: MigrationManifest;
   license: MigrationLicense;
 }
@@ -181,7 +198,7 @@ export function greenInputs(): GreenInputs {
     build: build(),
     parity: parity(),
     security: security(),
-    sourceTests: { discovered: 34, representedAsFixtures: 220 },
+    sourceTests: { discovered: 34, passed: 34, representedAsFixtures: 220 },
     manifest: m,
     license: license(m),
   };

@@ -1,0 +1,18 @@
+[
+  {
+    "fixtureId": "health",
+    "method": "GET",
+    "path": "/health"
+  },
+  {
+    "fixtureId": "gold-quote",
+    "method": "POST",
+    "path": "/quote",
+    "body": {
+      "customerTier": "gold",
+      "subtotal": 249.95,
+      "coupon": "SUMMER10",
+      "country": "IN"
+    }
+  }
+]
