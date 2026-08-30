@@ -18,6 +18,12 @@ interface DemoInput {
   sourceRepo?: string;
   sourceCommit?: string;
   sourcePath?: string;
+  targetRepo?: string;
+}
+
+export interface DemoGatewayOptions {
+  /** Visual pacing for the control-center demo. Tests leave this at 0. */
+  stepDelayMs?: number;
 }
 
 const ENDPOINTS = [
@@ -66,6 +72,11 @@ export class DemoGateway implements AgentGateway {
   private sessionSequence = 0;
   private readonly parityRuns = new Map<string, number>();
   private readonly artifactsBySession = new Map<string, Record<string, string>>();
+  private readonly stepDelayMs: number;
+
+  constructor(options: DemoGatewayOptions = {}) {
+    this.stepDelayMs = options.stepDelayMs ?? 0;
+  }
 
   async runStage(params: RunStageParams): Promise<StageResult> {
     this.calls.push({ method: "runStage", agentName: params.agentName, input: params.input });
@@ -79,16 +90,38 @@ export class DemoGateway implements AgentGateway {
       type: "turn.created",
       turnId,
       state: { status: "running" },
+      simulated: true,
     });
+    await this.pause();
+
+    for (const tool of this.tools(params.agentName, input.migrationId)) {
+      await this.emit(params.onEvent, "tool.call", {
+        type: "tool.call",
+        name: tool.name,
+        content: tool.detail,
+        simulated: true,
+      });
+      await this.pause();
+      await this.emit(params.onEvent, "tool.result", {
+        type: "tool.result",
+        name: tool.name,
+        content: tool.result,
+        simulated: true,
+      });
+      await this.pause();
+    }
+
     await this.emit(params.onEvent, "model.message", {
       type: "model.message",
       content: this.activity(params.agentName, input.migrationId),
+      simulated: true,
     });
 
     if (params.agentName === "mh-cutover") {
       await this.emit(params.onEvent, "tool.approval_required", {
         type: "tool.approval_required",
         threadId: "main",
+        simulated: true,
         toolCalls: [{ id: `demo-pr-${input.migrationId}`, name: "create_pull_request" }],
       });
       return { sessionId, turnId, lastSeq: this.sequence, outcome: "waiting" };
@@ -97,6 +130,7 @@ export class DemoGateway implements AgentGateway {
     await this.emit(params.onEvent, "turn.done", {
       type: "turn.done",
       state: { status: "done" },
+      simulated: true,
     });
     return { sessionId, turnId, lastSeq: this.sequence, outcome: "completed" };
   }
@@ -106,6 +140,7 @@ export class DemoGateway implements AgentGateway {
     await this.emit(params.onEvent, "turn.done", {
       type: "turn.done",
       state: { status: "done" },
+      simulated: true,
     });
     return {
       sessionId: params.sessionId,
@@ -120,11 +155,13 @@ export class DemoGateway implements AgentGateway {
     await this.emit(params.onEvent, "tool.response", {
       type: "tool.response",
       threadId: "main",
+      simulated: true,
       content: "Demo PR opened (no external write was performed).",
     });
     await this.emit(params.onEvent, "turn.done", {
       type: "turn.done",
       state: { status: "done" },
+      simulated: true,
     });
     return {
       sessionId: params.sessionId,
@@ -141,6 +178,64 @@ export class DemoGateway implements AgentGateway {
   }): Promise<string> {
     this.calls.push({ method: "downloadArtifact", input: params.path });
     return this.artifactsBySession.get(params.sessionId)?.[params.path] ?? "{}";
+  }
+
+  private tools(agentName: string, migrationId: string): Array<{ name: string; detail: string; result: string }> {
+    if (agentName === "mh-architect" || agentName === "mh-contract") {
+      return [
+        {
+          name: "github-read.get_file_contents",
+          detail: "src/OrderPricing.Api/Program.cs",
+          result: "read 5 endpoints from orderpricing-legacy (simulated MCP)",
+        },
+      ];
+    }
+    if (agentName === "mh-migrator") {
+      return [
+        {
+          name: "sandbox.exec",
+          detail: "cargo check --offline",
+          result: "PASS (simulated sandbox; no Daytona)",
+        },
+        {
+          name: "sandbox.exec",
+          detail: "cargo test --offline",
+          result: "41/41 passed (simulated sandbox; no Daytona)",
+        },
+      ];
+    }
+    if (agentName === "mh-parity") {
+      const run = this.parityRuns.get(migrationId) ?? 0;
+      return [
+        {
+          name: "sandbox.exec",
+          detail: "replay fixtures/fixtures.json against generated Axum",
+          result:
+            run <= 1
+              ? "383/384 — fx-0184 total 170.00 vs 169.99 (simulated)"
+              : "384/384 behavioral parity clean (simulated)",
+        },
+      ];
+    }
+    if (agentName === "mh-repair") {
+      return [
+        {
+          name: "sandbox.exec",
+          detail: "patch money path to rust_decimal::Decimal",
+          result: "midpoint-to-even rounding restored (simulated)",
+        },
+      ];
+    }
+    if (agentName === "mh-security") {
+      return [
+        {
+          name: "sandbox.exec",
+          detail: "cargo audit --offline",
+          result: "zero new high-severity (simulated)",
+        },
+      ];
+    }
+    return [];
   }
 
   private artifacts(agentName: string, input: DemoInput): Record<string, string> {
@@ -257,7 +352,7 @@ export class DemoGateway implements AgentGateway {
           migrationId,
           mode: "demo",
           status: "simulated",
-          pullRequestUrl: null,
+          pullRequestUrl: `https://github.com/${input.targetRepo ?? input.sourceRepo ?? "acme/orderpricing-legacy"}/pull/demo-${migrationId.toLowerCase()}`,
         }),
       };
     }
@@ -286,9 +381,14 @@ export class DemoGateway implements AgentGateway {
           : "Re-ran all 384 fixtures: behavioral parity is clean.",
       "mh-repair": "Corrected monetary arithmetic to decimal midpoint-to-even semantics.",
       "mh-security": "All five security-parity checks passed with zero new high-severity findings.",
-      "mh-cutover": "Prepared the licensed pull request action; waiting on the migration license.",
+      "mh-cutover": "Prepared the licensed pull request action; waiting on the operator checkpoint.",
     };
     return messages[agentName] ?? `${agentName} completed.`;
+  }
+
+  private async pause(): Promise<void> {
+    if (this.stepDelayMs <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, this.stepDelayMs));
   }
 
   private async emit(

@@ -32,3 +32,7 @@ recordings/
 
 # vendored donor repos (Reuse Map sources — cloned locally, never committed)
 reference/
+
+__pycache__/
+*.pyc
+.pytest_cache/

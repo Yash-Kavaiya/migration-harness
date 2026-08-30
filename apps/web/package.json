@@ -8,7 +8,7 @@
     "start": "next start -p 3000",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "lint": "next lint"
   },
   "dependencies": {

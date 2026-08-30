@@ -12,6 +12,7 @@ import { SseHub } from "../sse.js";
 import { Store } from "../store.js";
 import { FakeGateway } from "../testing/fake-gateway.js";
 import { makeStageResolver } from "./resolver.js";
+import { confirmCutover } from "../testing/confirm-cutover.js";
 
 let clockN = 0;
 const clock = (): string => new Date(1_700_000_000_000 + clockN++ * 1000).toISOString();
@@ -138,13 +139,13 @@ describe("cannot_publish_without_approval", () => {
 });
 
 describe("valid_manifest_after_approval_can_proceed", () => {
-  it("allow → license minted → cutover PR write auto-approved → license consumed → complete", async () => {
+  it("allow → license minted → operator checkpoint → license consumed → complete", async () => {
     const migrationId = await toAwaitingLicense();
     expect(orch.view(migrationId)!.authority.githubPush).toBe("locked");
 
     const decision = orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
     expect(decision.ok).toBe(true);
-    await orch.drain();
+    await confirmCutover(orch, migrationId);
 
     const view = orch.view(migrationId)!;
     expect(view.stage).toBe("complete");
@@ -164,7 +165,7 @@ describe("license_nonce_is_single_use", () => {
   it("the consumed license cannot authorize a second cutover write", async () => {
     const migrationId = await toAwaitingLicense();
     const { licenseId } = orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
-    await orch.drain();
+    await confirmCutover(orch, migrationId);
     expect(orch.view(migrationId)!.stage).toBe("complete");
 
     // Re-drive a fresh cutover turn against the now-spent license.

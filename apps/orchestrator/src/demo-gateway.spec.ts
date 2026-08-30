@@ -4,6 +4,7 @@ import { Orchestrator } from "./orchestrator.js";
 import { SseHub } from "./sse.js";
 import { makeStageResolver } from "./stages/resolver.js";
 import { Store } from "./store.js";
+import { confirmCutover } from "./testing/confirm-cutover.js";
 
 const START = {
   sourceRepo: "demo/orderpricing-legacy",
@@ -58,7 +59,7 @@ describe("DemoGateway", () => {
       decidedBy: "demo.operator@migrationharness.dev",
     });
     expect(decision.ok).toBe(true);
-    await orchestrator.drain();
+    await confirmCutover(orchestrator, migrationId);
 
     const view = orchestrator.view(migrationId)!;
     expect(view.phase).toBe("complete");
