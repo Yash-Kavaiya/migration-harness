@@ -154,7 +154,7 @@ export function StartContract() {
             </p>
           )}
           {error && <p className="fail">{error}</p>}
-          <button className="btn" disabled={busy || orchMode === "unknown" || (demo ? orchMode !== "demo" : orchMode !== "live")} type="submit">
+          <button className="btn" disabled={busy || (orchMode !== "unknown" && (demo ? orchMode !== "demo" : orchMode !== "live"))} type="submit">
             {busy ? "STARTING…" : "START MIGRATION"}
           </button>
         </form>
