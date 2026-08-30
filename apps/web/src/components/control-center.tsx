@@ -218,6 +218,9 @@ export function ControlCenter({ migrationId }: { migrationId: string }) {
             <p className="kicker">Agent question</p>
             <h2>RESPONSE REQUIRED</h2>
             <p className="muted">The agent is waiting for an operator reply before it can continue.</p>
+            <pre className="sha" style={{ whiteSpace: "pre-wrap" }}>
+              {JSON.stringify(pendingQuestion.payload ?? pendingQuestion, null, 2)}
+            </pre>
             <textarea
               value={questionText}
               onChange={(event) => setQuestionText(event.target.value)}
