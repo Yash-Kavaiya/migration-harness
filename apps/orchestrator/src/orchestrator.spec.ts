@@ -4,6 +4,7 @@ import { Orchestrator, type StageResolver } from "./orchestrator.js";
 import { SseHub } from "./sse.js";
 import { Store } from "./store.js";
 import { FakeGateway } from "./testing/fake-gateway.js";
+import { confirmCutover } from "./testing/confirm-cutover.js";
 
 let clockValue = 0;
 const clock = (): string => new Date(1_700_000_000_000 + clockValue++ * 1000).toISOString();
@@ -272,7 +273,7 @@ describe("Orchestrator gate + license flow", () => {
     const decision = orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
     expect(decision).toMatchObject({ ok: true });
     expect(decision.licenseId).toMatch(/^LIC-MH-0001-\d\d$/);
-    await orch.drain();
+    await confirmCutover(orch, migrationId);
 
     const view = orch.view(migrationId)!;
     expect(view.stage).toBe("complete");
@@ -301,7 +302,7 @@ describe("Orchestrator gate + license flow", () => {
 });
 
 describe("Orchestrator cutover approvals", () => {
-  it("answers a cutover GitHub-write approval automatically with the license", async () => {
+  it("parks a licensed GitHub-write for an operator checkpoint, then completes", async () => {
     gateway.script("mh-cutover", { pauseForApproval: "tc-cutover-1" });
     orch.setStageResolver(readyResolver);
 
@@ -310,8 +311,9 @@ describe("Orchestrator cutover approvals", () => {
     orch.evaluateAndMaybeFreeze(migrationId);
     orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
     await orch.drain();
+    expect(orch.view(migrationId)!.pendingInteractions.length).toBeGreaterThan(0);
+    await confirmCutover(orch, migrationId);
 
-    // No human interaction needed — the license authorized the write.
     expect(orch.view(migrationId)!.stage).toBe("complete");
     expect(orch.view(migrationId)!.pendingInteractions).toHaveLength(0);
   });
@@ -330,7 +332,7 @@ describe("Orchestrator cutover approvals", () => {
     await orch.drain();
     orch.evaluateAndMaybeFreeze(migrationId);
     orch.decideLicense(migrationId, { decision: "allow", decidedBy: "yash@example.com" });
-    await orch.drain();
+    await confirmCutover(orch, migrationId);
 
     expect(orch.view(migrationId)!.stage).toBe("complete");
     expect(gateway.calls.filter((call) => call.method === "reply")).toHaveLength(3);

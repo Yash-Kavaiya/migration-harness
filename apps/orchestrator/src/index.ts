@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const store = new Store(config.ORCH_DB);
   const sse = new SseHub();
   const gateway: AgentGateway = config.MH_DEMO_MODE
-    ? new DemoGateway()
+    ? new DemoGateway({ stepDelayMs: Number(process.env.MH_DEMO_STEP_MS ?? "700") })
     : new TrueForgeGateway(config);
 
   const orchestrator = new Orchestrator({

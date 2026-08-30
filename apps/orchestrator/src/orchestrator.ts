@@ -259,9 +259,54 @@ export class Orchestrator {
     }
     if (pending.resolvedAt) return { ok: false, reason: "already answered" };
 
-    const toolCalls = (pending.payload as { toolCalls?: Array<{ id?: string }> }).toolCalls ?? [];
+    const toolCalls =
+      (pending.payload as { toolCalls?: Array<{ id?: string; name?: string }> }).toolCalls ?? [];
     const toolCallId = toolCalls[0]?.id ?? "";
     const at = this.clock();
+
+    const runForPending = this.store.stageRuns(migrationId).find((r) => r.sessionId === pending.sessionId);
+    if (pending.kind === "approval" && runForPending?.stage === "cutover" && answer.kind === "approval") {
+      const manifest = this.store.getArtifact<MigrationManifest>(migrationId, "manifest");
+      const license = this.store.getLicense(migrationId);
+      const tree = currentRustTree(this.store, migrationId);
+      const decision = routeApproval({ toolCalls }, { license, manifest, currentRustTree: tree });
+      if (answer.status === "allow") {
+        if (decision.action !== "allow") {
+          this.relay(migrationId, "cutover.denied", {
+            tool: "toolName" in decision ? decision.toolName : toolCalls[0]?.name,
+            reason: "reason" in decision ? decision.reason : "cutover preconditions not met",
+          });
+          if (decision.action === "park" && license && /TOCTOU|changed after|integrity/i.test(decision.reason)) {
+            this.licenses.invalidate(license.licenseId, at, decision.reason);
+            const current = this.store.loadState(migrationId);
+            if (current) this.store.saveState(migrationId, clearLicense(current, at), at);
+            this.relay(migrationId, "license.invalidated", { licenseId: license.licenseId, reason: decision.reason });
+            this.relay(migrationId, "state", this.snapshot(migrationId));
+          }
+          return { ok: false, reason: "reason" in decision ? decision.reason : "cutover write refused" };
+        }
+        if (decision.toolName === "create_pull_request") {
+          const existing = this.store.getArtifact<Record<string, unknown>>(migrationId, "cutover") ?? {};
+          this.store.putArtifact(
+            migrationId,
+            "cutover",
+            {
+              ...existing,
+              status: "approved",
+              tool: decision.toolName,
+              toolCallId: decision.toolCallId,
+              approvedAt: at,
+            },
+            at,
+          );
+        }
+        this.relay(migrationId, "license.exercised", {
+          licenseId: license?.licenseId ?? null,
+          tool: decision.toolName,
+        });
+      }
+    }
+
     this.store.resolvePendingInteraction(eventId, at);
 
     const item =
@@ -494,8 +539,8 @@ export class Orchestrator {
 
     if (result.outcome === "waiting") {
       this.store.updateStageRun(runId, { status: "waiting", lastSeq: result.lastSeq });
-      // A GitHub-write approval during cutover is answered by the license, not by
-      // parking it for a human — unless the license is missing or the tree drifted.
+      // Licensed GitHub writes still pause for a control-center checkpoint.
+      // Missing/invalid licenses and TOCTOU drift are parked or invalidated here.
       if (stage === "cutover") this.routeCutoverApprovals(migrationId);
       return;
     }
@@ -530,10 +575,10 @@ export class Orchestrator {
   }
 
   /**
-   * Decide every open cutover approval with the license. `allow` is answered
-   * automatically (the human already authorized this by granting the license);
-   * anything else is surfaced as `license.required` / `cutover.denied` and left
-   * parked for a human — nothing is written.
+   * Decide every open cutover approval with the license. A valid license parks
+   * the write as `cutover.checkpoint` so the operator can film/confirm the
+   * GitHub tool approval. Anything else is surfaced as `license.required` /
+   * `cutover.denied` and left parked — nothing is written.
    */
   private routeCutoverApprovals(migrationId: string): void {
     const state = this.store.loadState(migrationId);
@@ -550,25 +595,13 @@ export class Orchestrator {
       const decision = routeApproval({ toolCalls }, { license, manifest, currentRustTree: tree });
 
       if (decision.action === "allow") {
-        if (decision.toolName === "create_pull_request") {
-          const approvedAt = this.clock();
-          this.store.putArtifact(
-            migrationId,
-            "cutover",
-            {
-              status: "approved",
-              tool: decision.toolName,
-              toolCallId: decision.toolCallId,
-              approvedAt,
-            },
-            approvedAt,
-          );
-        }
-        this.relay(migrationId, "license.exercised", {
-          licenseId: license?.licenseId ?? null,
+        // License proves the write is authorized. The operator still has to click
+        // the tool-approval checkpoint in the control center before GitHub is touched.
+        this.relay(migrationId, "cutover.checkpoint", {
+          eventId: interaction.eventId,
           tool: decision.toolName,
+          toolCallId: decision.toolCallId,
         });
-        this.answerInteraction(migrationId, interaction.eventId, { kind: "approval", status: "allow" });
         continue;
       }
 
