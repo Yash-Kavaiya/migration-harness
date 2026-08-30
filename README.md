@@ -109,9 +109,8 @@ Turn the demo flag off, sync agents, then start orchestrator and web.
 
 Every substantive change lands through a reviewed pull request. No direct pushes to main.
 
-- PR 2 (https://github.com/Yash-Kavaiya/migration-harness/pull/2): stacked agents PR. The agentic review found real bugs: overcounted / last-duplicate-wins byRoute tallies that could hide parity failures; skipped security checks treated as passing; MCP allowlists not pinned to each agent's full server + tool selector. Fixes landed, then agentic_review was re-run (commit trail 88b86e2, fa43a27, 19403d2).
-- Follow-up review passes on later stacked PRs (4abf17f, 623ba33).
-- [PR 9](https://github.com/Yash-Kavaiya/migration-harness/pull/9) — this submission. Opened against main; /agentic_review requested on the complete control-center.
+- [PR 9](https://github.com/Yash-Kavaiya/migration-harness/pull/9) — this submission. Qodo ran `/agentic_review` on open. Highs were fixed (license reuse across concurrent cutover approvals, `decidedBy` from the request body, demo terminal events with no pause), then re-review on `de746fa` came back clean. Merged to `main`.
+- [PR 2](https://github.com/Yash-Kavaiya/migration-harness/pull/2): stacked agents PR. The agentic review found real bugs: overcounted / last-duplicate-wins byRoute tallies that could hide parity failures; skipped security checks treated as passing; MCP allowlists not pinned to each agent's full server + tool selector. Fixes landed, then agentic_review was re-run (commit trail 88b86e2, fa43a27, 19403d2).
 
 Process: [docs/qodo.md](docs/qodo.md).
 
