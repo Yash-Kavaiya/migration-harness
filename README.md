@@ -111,7 +111,7 @@ Every substantive change lands through a reviewed pull request. No direct pushes
 
 - PR 2 (https://github.com/Yash-Kavaiya/migration-harness/pull/2): stacked agents PR. The agentic review found real bugs: overcounted / last-duplicate-wins byRoute tallies that could hide parity failures; skipped security checks treated as passing; MCP allowlists not pinned to each agent's full server + tool selector. Fixes landed, then agentic_review was re-run (commit trail 88b86e2, fa43a27, 19403d2).
 - Follow-up review passes on later stacked PRs (4abf17f, 623ba33).
-- Submission PR (this branch): opened against main with agentic_review requested on the complete control-center.
+- [PR 9](https://github.com/Yash-Kavaiya/migration-harness/pull/9) — this submission. Opened against main; /agentic_review requested on the complete control-center.
 
 Process: [docs/qodo.md](docs/qodo.md).
 
