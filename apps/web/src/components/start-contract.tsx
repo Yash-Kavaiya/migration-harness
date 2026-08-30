@@ -24,7 +24,10 @@ export function StartContract() {
     const stored = sessionStorage.getItem("mh.demo");
     if (stored === "0") setDemo(false);
     void getHealth()
-      .then((health) => setOrchMode(health.mode))
+      .then((health) => {
+        setOrchMode(health.mode);
+        setDemo(health.mode === "demo");
+      })
       .catch(() => setOrchMode("unknown"));
   }, []);
 
@@ -32,8 +35,16 @@ export function StartContract() {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    sessionStorage.setItem("mh.demo", demo ? "1" : "0");
     try {
+      const health = await getHealth();
+      setOrchMode(health.mode);
+      if (demo && health.mode !== "demo") {
+        throw new Error("Demo mode is ON but the orchestrator is live. Restart it with MH_DEMO_MODE=true, or turn the toggle OFF.");
+      }
+      if (!demo && health.mode !== "live") {
+        throw new Error("Demo mode is OFF but the orchestrator is simulated. Set MH_DEMO_MODE=false for live TrueForge.");
+      }
+      sessionStorage.setItem("mh.demo", demo ? "1" : "0");
       const { migrationId } = await startMigration({
         sourceRepo: form.sourceRepo.trim(),
         sourceCommit: form.sourceCommit.trim(),
@@ -143,7 +154,7 @@ export function StartContract() {
             </p>
           )}
           {error && <p className="fail">{error}</p>}
-          <button className="btn" disabled={busy} type="submit">
+          <button className="btn" disabled={busy || orchMode === "unknown" || (demo ? orchMode !== "demo" : orchMode !== "live")} type="submit">
             {busy ? "STARTING…" : "START MIGRATION"}
           </button>
         </form>

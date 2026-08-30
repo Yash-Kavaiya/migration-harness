@@ -35,6 +35,7 @@ export function ControlCenter({ migrationId }: { migrationId: string }) {
   const [demo, setDemo] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [questionText, setQuestionText] = useState("");
   const freezeOnce = useRef(false);
   const cursor = useRef(0);
 
@@ -110,6 +111,10 @@ export function ControlCenter({ migrationId }: { migrationId: string }) {
     const open = view?.pendingInteractions ?? [];
     return open.find((item) => item.kind === "approval") ?? null;
   }, [view]);
+  const pendingQuestion = useMemo(() => {
+    const open = view?.pendingInteractions ?? [];
+    return open.find((item) => item.kind === "question") ?? null;
+  }, [view]);
 
   async function license(decision: "allow" | "deny") {
     setBusy(true);
@@ -129,6 +134,25 @@ export function ControlCenter({ migrationId }: { migrationId: string }) {
     setError(null);
     try {
       await answerInteraction(migrationId, interaction.eventId, { kind: "approval", status });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function answerQuestion(interaction: PendingInteraction) {
+    const content = questionText.trim();
+    if (!content) {
+      setError("A reply is required to resume the waiting agent.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await answerInteraction(migrationId, interaction.eventId, { kind: "question", content });
+      setQuestionText("");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -179,7 +203,7 @@ export function ControlCenter({ migrationId }: { migrationId: string }) {
           </div>
         )}
       </main>
-      {pending && view?.stage === "cutover" && (
+      {pending && (
         <CutoverPause
           interaction={pending}
           demo={demo}
@@ -187,6 +211,24 @@ export function ControlCenter({ migrationId }: { migrationId: string }) {
           onAllow={() => void answer(pending, "allow")}
           onDeny={() => void answer(pending, "deny")}
         />
+      )}
+      {pendingQuestion && (
+        <div className="overlay">
+          <section className="panel hud-corners stack">
+            <p className="kicker">Agent question</p>
+            <h2>RESPONSE REQUIRED</h2>
+            <p className="muted">The agent is waiting for an operator reply before it can continue.</p>
+            <textarea
+              value={questionText}
+              onChange={(event) => setQuestionText(event.target.value)}
+              rows={4}
+              style={{ width: "100%", background: "#080c09", color: "inherit", border: "1px solid #243328", padding: 8 }}
+            />
+            <button className="btn" disabled={busy} type="button" onClick={() => void answerQuestion(pendingQuestion)}>
+              SEND REPLY
+            </button>
+          </section>
+        </div>
       )}
       <footer className="footer">
         <span>{demo ? "DemoGateway is simulated. No GitHub write. No Daytona." : "Live TrueForge session"}</span>

@@ -18,6 +18,7 @@ interface DemoInput {
   sourceRepo?: string;
   sourceCommit?: string;
   sourcePath?: string;
+  targetRepo?: string;
 }
 
 export interface DemoGatewayOptions {
@@ -351,7 +352,7 @@ export class DemoGateway implements AgentGateway {
           migrationId,
           mode: "demo",
           status: "simulated",
-          pullRequestUrl: `https://github.com/${input.sourceRepo ?? "acme/orderpricing-legacy"}/pull/demo-${migrationId.toLowerCase()}`,
+          pullRequestUrl: `https://github.com/${input.targetRepo ?? input.sourceRepo ?? "acme/orderpricing-legacy"}/pull/demo-${migrationId.toLowerCase()}`,
         }),
       };
     }
